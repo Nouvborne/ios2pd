@@ -25,6 +25,19 @@ file "$APP_DIR/ios2pd"
 echo "==> Info.plist:"
 plutil -p "$APP_DIR/Info.plist"
 
+# ---------------------------------------------------------------- codesign
+# Sideloaders (AltStore/Sideloadly/TrollStore) refuse a bundle with NO code
+# signature at all. Ad-hoc sign ("-") on the macOS runner so installd and the
+# various re-signing tools accept it; they swap in their own cert later.
+rm -rf "$APP_DIR/_CodeSignature"
+if command -v codesign >/dev/null 2>&1; then
+  echo "==> Ad-hoc codesigning bundle..."
+  codesign --force --sign - "$APP_DIR"
+  codesign -dv "$APP_DIR" 2>&1 || true
+else
+  echo "!! codesign not found; packaging WITHOUT a signature"
+fi
+
 # ---------------------------------------------------------------- IPA
 rm -rf "$BUILD_DIR/Payload" "$DIST_DIR"
 mkdir -p "$BUILD_DIR/Payload" "$DIST_DIR"
