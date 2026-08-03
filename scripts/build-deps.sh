@@ -19,7 +19,7 @@ if [ ! -f "$DEPS_PREFIX/lib/libcrypto.a" ]; then
   tar xzf "$DEPS_SRC/openssl-${OPENSSL_VER}.tar.gz" -C "$DEPS_SRC"
   pushd "$DEPS_SRC/openssl-${OPENSSL_VER}" >/dev/null
   ./Configure ios64-cross \
-    no-shared no-dso no-tests no-apps \
+    no-shared no-dso no-tests \
     --prefix="$DEPS_PREFIX" --openssldir="$DEPS_PREFIX"
   make -j"$JOBS"
   make install_sw
