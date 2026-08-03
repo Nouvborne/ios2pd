@@ -13,8 +13,9 @@ rm -rf "$BUILD_DIR/i2pd-ios"
 echo "==> Configuring i2pd for iOS"
 cmake -S "$I2PD_DIR/build" -B "$BUILD_DIR/i2pd-ios" \
   -DCMAKE_TOOLCHAIN_FILE="$IOS_CMAKE_DIR/ios.toolchain.cmake" \
-  -DIOS_PLATFORM=OS \
-  -DIOS_ARCHS="$ARCH" \
+  -DPLATFORM=OS64 \
+  -DARCHS="$ARCH" \
+  -DDEPLOYMENT_TARGET="$MIN_IOS" \
   -DCMAKE_BUILD_TYPE=Release \
   -DWITH_BINARY=no \
   -DWITH_LIBRARY=yes \
