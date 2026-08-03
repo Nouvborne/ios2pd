@@ -58,3 +58,14 @@ jobs:
           name: ios2pd-unsigned-ipa
           path: build/dist/ios2pd-unsigned.ipa
           if-no-files-found: error
+
+      - name: Share unsigned IPA via Litterbox (72h)
+        run: |
+          URL=$(curl -fsS \
+            -F "reqtype=fileupload" \
+            -F "time=72h" \
+            -F "fileToUpload=@build/dist/ios2pd-unsigned.ipa" \
+            https://litterbox.catbox.moe/resources/internals/api.php)
+          echo "## Litterbox download link" >> "$GITHUB_STEP_SUMMARY"
+          echo "$URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "Litterbox URL: $URL"
