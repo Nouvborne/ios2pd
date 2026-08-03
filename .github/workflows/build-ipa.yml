@@ -1,0 +1,60 @@
+name: Build unsigned iOS IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-ipa
+  cancel-in-progress: true
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          cmake --version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Cache iOS dependencies
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: build/deps-ios
+          key: deps-ios-${{ runner.os }}-${{ hashFiles('scripts/build-deps.sh') }}
+
+      - name: Build OpenSSL / Boost / zlib for iOS
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: ./scripts/build-deps.sh
+
+      - name: Build i2pd static libraries
+        run: ./scripts/build-i2pd.sh
+
+      - name: Build iOS app
+        run: ./scripts/build-app.sh
+
+      - name: Package unsigned IPA
+        run: ./scripts/make-ipa.sh
+
+      - name: Inspect artifacts
+        run: |
+          file build/ios2pd.app/ios2pd
+          ls -lh build/dist
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios2pd-unsigned-ipa
+          path: build/dist/ios2pd-unsigned.ipa
+          if-no-files-found: error
