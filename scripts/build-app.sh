@@ -63,6 +63,7 @@ LIBS=(
 
 FRAMEWORKS=(
   -framework UIKit
+  -framework CoreGraphics
   -framework Foundation
   -framework CoreFoundation
   -framework Security
