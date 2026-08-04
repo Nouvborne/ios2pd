@@ -1799,6 +1799,8 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
 // ---------------------------------------------------------------------------
 // Proxy / app settings tab
 // ---------------------------------------------------------------------------
+@class I2pBrowserViewController;
+
 @interface AppSettingsViewController : UITableViewController <UITextFieldDelegate>
 @property (nonatomic, assign) BOOL busy;
 @end
