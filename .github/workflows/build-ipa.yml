@@ -59,13 +59,27 @@ jobs:
           path: build/dist/ios2pd-unsigned.ipa
           if-no-files-found: error
 
-      - name: Share unsigned IPA via Litterbox (72h)
+      - name: Share unsigned IPA (Litterbox 72h, catbox fallback)
         run: |
-          URL=$(curl -fsS \
-            -F "reqtype=fileupload" \
-            -F "time=72h" \
-            -F "fileToUpload=@build/dist/ios2pd-unsigned.ipa" \
-            https://litterbox.catbox.moe/resources/internals/api.php)
-          echo "## Litterbox download link" >> "$GITHUB_STEP_SUMMARY"
+          URL=""
+          if LIT=$(curl -fsS \
+              -F "reqtype=fileupload" \
+              -F "time=72h" \
+              -F "fileToUpload=@build/dist/ios2pd-unsigned.ipa" \
+              https://litterbox.catbox.moe/resources/internals/api.php 2>/dev/null); then
+            case "$LIT" in
+              https://litter.catbox.moe/*.ipa) URL="$LIT" ;;
+              *) echo "!! Litterbox returned an unexpected response: $LIT" ;;
+            esac
+          else
+            echo "!! Litterbox upload failed (HTTP ${?}); falling back to catbox.moe"
+          fi
+          if [ -z "$URL" ]; then
+            URL=$(curl -fsS \
+              -F "reqtype=fileupload" \
+              -F "fileToUpload=@build/dist/ios2pd-unsigned.ipa" \
+              https://catbox.moe/user/api.php)
+          fi
+          echo "## IPA download link" >> "$GITHUB_STEP_SUMMARY"
           echo "$URL" >> "$GITHUB_STEP_SUMMARY"
-          echo "Litterbox URL: $URL"
+          echo "Download URL: $URL"

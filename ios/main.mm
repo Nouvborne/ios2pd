@@ -618,19 +618,63 @@ static void SslServerStart(int port) {
 }
 
 // ---------------------------------------------------------------------------
-// Liquid-glass UI helpers
+// Liquid Glass UI helpers
+//
+// Native Liquid Glass (UIGlassEffect) needs the iOS 26 SDK + an iOS 26
+// runtime; this app sideloads from iOS 13, so we recreate the look with the
+// system material blur, continuous corners, a 1px specular top-edge highlight
+// and a hairline tinted border - the same recipe the HIG uses for glass.
 // ---------------------------------------------------------------------------
+
+// 1px "light catches the top edge" strip that sits on top of a glass card.
+@interface GlassHighlight : UIView
+@end
+@implementation GlassHighlight {
+  CAGradientLayer* _gradient;
+}
+- (instancetype)initWithFrame:(CGRect)frame {
+  self = [super initWithFrame:frame];
+  if (self) {
+    self.userInteractionEnabled = NO;
+    self.translatesAutoresizingMaskIntoConstraints = NO;
+    _gradient = [CAGradientLayer layer];
+    _gradient.colors = @[
+      (id)[UIColor colorWithWhite:1.0 alpha:0.30].CGColor,
+      (id)[UIColor colorWithWhite:1.0 alpha:0.02].CGColor,
+    ];
+    _gradient.locations = @[ @0.0, @1.0 ];
+    _gradient.startPoint = CGPointMake(0, 0);
+    _gradient.endPoint = CGPointMake(1, 0);
+    [self.layer addSublayer:_gradient];
+  }
+  return self;
+}
+- (void)layoutSubviews {
+  [super layoutSubviews];
+  _gradient.frame = self.bounds;
+  _gradient.cornerRadius = self.bounds.size.height / 2;
+}
+@end
+
 @interface GlassCard : UIVisualEffectView
 @end
 @implementation GlassCard
 - (instancetype)initWithFrame:(CGRect)frame {
   self = [super initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
   if (self) {
-    self.layer.cornerRadius = 22;
+    self.layer.cornerRadius = 24;
     self.layer.cornerCurve = kCACornerCurveContinuous;
     self.clipsToBounds = YES;
-    self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
+    self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.22].CGColor;
     self.layer.borderWidth = 1.0 / [UIScreen mainScreen].scale;
+    GlassHighlight* hl = [[GlassHighlight alloc] initWithFrame:CGRectZero];
+    [self.contentView addSubview:hl];
+    [NSLayoutConstraint activateConstraints:@[
+      [hl.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+      [hl.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:10],
+      [hl.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-10],
+      [hl.heightAnchor constraintEqualToConstant:1],
+    ]];
   }
   return self;
 }
@@ -694,6 +738,7 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
   UILayoutGuide* safe = root.safeAreaLayoutGuide;
 
   GlassCard* card = [[GlassCard alloc] initWithFrame:CGRectZero];
+  card.translatesAutoresizingMaskIntoConstraints = NO;
   [root addSubview:card];
   [NSLayoutConstraint activateConstraints:@[
     [card.topAnchor constraintEqualToAnchor:safe.topAnchor constant:16],
@@ -702,22 +747,26 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
   ]];
 
   _status = [[UILabel alloc] initWithFrame:CGRectZero];
+  _status.translatesAutoresizingMaskIntoConstraints = NO;
   _status.text = @"Stopped";
   _status.font = [UIFont systemFontOfSize:22 weight:UIFontWeightBold];
   _status.textColor = [UIColor labelColor];
   [card.contentView addSubview:_status];
 
   _detail = [[UILabel alloc] initWithFrame:CGRectZero];
+  _detail.translatesAutoresizingMaskIntoConstraints = NO;
   _detail.text = @"i2pd is not running";
   _detail.font = [UIFont systemFontOfSize:14];
   _detail.textColor = [UIColor secondaryLabelColor];
   [card.contentView addSubview:_detail];
 
   _toggle = [GradientButton buttonWithType:UIButtonTypeSystem];
+  _toggle.translatesAutoresizingMaskIntoConstraints = NO;
   [_toggle setTitle:@"Start Router" forState:UIControlStateNormal];
   [_toggle setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
   _toggle.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
   _toggle.layer.cornerRadius = 16;
+  _toggle.layer.cornerCurve = kCACornerCurveContinuous;
   [_toggle addTarget:self action:@selector(onToggle:) forControlEvents:UIControlEventTouchUpInside];
   [card.contentView addSubview:_toggle];
 
@@ -736,6 +785,7 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
   ]];
 
   _vpn = [[UILabel alloc] initWithFrame:CGRectZero];
+  _vpn.translatesAutoresizingMaskIntoConstraints = NO;
   _vpn.text = @"VPN: not configured";
   _vpn.font = [UIFont systemFontOfSize:13];
   _vpn.textColor = [UIColor secondaryLabelColor];
@@ -746,12 +796,14 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
   [root addSubview:_vpn];
 
   UILabel* logHeader = [[UILabel alloc] initWithFrame:CGRectZero];
+  logHeader.translatesAutoresizingMaskIntoConstraints = NO;
   logHeader.text = @"Log";
   logHeader.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
   logHeader.textColor = [UIColor secondaryLabelColor];
   [root addSubview:logHeader];
 
   GlassCard* logCard = [[GlassCard alloc] initWithFrame:CGRectZero];
+  logCard.translatesAutoresizingMaskIntoConstraints = NO;
   [root addSubview:logCard];
 
   _log = [[UITextView alloc] initWithFrame:CGRectZero];
@@ -1123,6 +1175,7 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
   }
   cell.textLabel.text = [self labelForKey:key];
   UITextField* f = [[UITextField alloc] initWithFrame:CGRectZero];
+  f.translatesAutoresizingMaskIntoConstraints = NO;
   f.delegate = self;
   f.returnKeyType = UIReturnKeyDone;
   f.autocorrectionType = UITextAutocorrectionTypeNo;
@@ -1245,6 +1298,7 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
                                                     action:@selector(save:)];
 
   UILabel* hint = [[UILabel alloc] initWithFrame:CGRectZero];
+  hint.translatesAutoresizingMaskIntoConstraints = NO;
   hint.text = @"Appended to i2pd.conf. INI syntax: key = value, sections like "
               @"[httpproxy]. Command-line flags win over this file. "
               @"Restart the router to apply.";
@@ -1254,6 +1308,7 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
   [self.view addSubview:hint];
 
   _tv = [[UITextView alloc] initWithFrame:CGRectZero];
+  _tv.translatesAutoresizingMaskIntoConstraints = NO;
   _tv.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightRegular];
   _tv.textColor = [UIColor labelColor];
   _tv.backgroundColor = [UIColor secondarySystemBackgroundColor];
@@ -1335,6 +1390,7 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
 
 - (UITextField*)portFieldWithTag:(NSInteger)tag value:(NSInteger)value {
   UITextField* f = [[UITextField alloc] initWithFrame:CGRectZero];
+  f.translatesAutoresizingMaskIntoConstraints = NO;
   f.tag = 1000 + ((tag - 100) / 10);
   f.text = [NSString stringWithFormat:@"%ld", (long)value];
   f.keyboardType = UIKeyboardTypeNumberPad;
@@ -1586,6 +1642,7 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
     UITableViewCell* cell = [self cellForTextField:tableView indexPath:ip];
     cell.textLabel.text = (ip.row == 0) ? @"Hostname" : @"HTTPS port";
     UITextField* f = [[UITextField alloc] initWithFrame:CGRectZero];
+    f.translatesAutoresizingMaskIntoConstraints = NO;
     f.tag = 2000 + ip.row;
     if (ip.row == 0) {
       f.text = SettingString(kBackloopHost, @"ios2pd.backloop.dev");
@@ -1616,6 +1673,7 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
     UITableViewCell* cell = [self cellForTextField:tableView indexPath:ip];
     cell.textLabel.text = @"SSID";
     UITextField* f = [[UITextField alloc] initWithFrame:CGRectZero];
+    f.translatesAutoresizingMaskIntoConstraints = NO;
     f.tag = 2002;
     f.text = SettingString(kSsid, @"");
     f.placeholder = @"e.g. MyHomeWiFi";
@@ -2026,7 +2084,7 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
     [_bar.topAnchor constraintEqualToAnchor:_web.bottomAnchor],
     [_bar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
     [_bar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-    [_bar.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    [_bar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
   ]];
 }
 
