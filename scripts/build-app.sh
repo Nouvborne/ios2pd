@@ -70,6 +70,7 @@ FRAMEWORKS=(
   -framework NetworkExtension
   -framework AVFoundation
   -framework SystemConfiguration
+  -framework QuartzCore
 )
 
 echo "==> Linking ios2pd"
