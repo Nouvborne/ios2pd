@@ -20,34 +20,28 @@ python3 "$ROOT/ios/make_icon.py" "$APP_DIR"
 # ---------------------------------------------------------------- validate
 echo "==> Bundle contents:"
 ls -la "$APP_DIR"
-echo "==> Extension:"
-ls -la "$APP_DIR/PlugIns/ios2pdProxy.appex" 2>/dev/null || echo "!! no extension found"
 echo "==> Binary arch:"
 file "$APP_DIR/ios2pd"
 echo "==> Info.plist:"
 plutil -p "$APP_DIR/Info.plist"
 
-# Ship the entitlements alongside the bundle so Sideloadly/AltStore users can
-# apply them (com.apple.developer.networking.networkextension) when signing.
+# Ship the (empty) entitlements alongside the bundle so Sideloadly/AltStore
+# sign it with default entitlements on any free Apple ID. No appex and no
+# restricted entitlements -> free-account signing trivially succeeds.
 cp "$ROOT/ios/entitlements.plist" "$APP_DIR/entitlements.plist"
 
 # ---------------------------------------------------------------- codesign
-# Sideloaders (AltStore/Sideloadly/TrollStore) refuse a bundle with NO code
-# signature at all. Ad-hoc sign ("-") on the macOS runner so installd and the
-# various re-signing tools accept it; they swap in their own cert later.
+# Ad-hoc sign ("-") on the macOS runner and then VERIFY with --deep --strict.
+# installd and strict sideloaders (ESign/Feather) reject a bundle whose
+# signature is malformed or whose sealed hashes don't match, so a broken
+# signature must fail the build rather than ship (set -e aborts below).
 rm -rf "$APP_DIR/_CodeSignature"
 if command -v codesign >/dev/null 2>&1; then
-  echo "==> Ad-hoc codesigning extension..."
-  if [ -d "$APP_DIR/PlugIns/ios2pdProxy.appex" ]; then
-    rm -rf "$APP_DIR/PlugIns/ios2pdProxy.appex/_CodeSignature"
-    codesign --force --sign - "$APP_DIR/PlugIns/ios2pdProxy.appex"
-    codesign -dv "$APP_DIR/PlugIns/ios2pdProxy.appex" 2>&1 || true
-  else
-    echo "!! no extension found; skipping appex signing"
-  fi
   echo "==> Ad-hoc codesigning bundle..."
   codesign --force --sign - "$APP_DIR"
   codesign -dv "$APP_DIR" 2>&1 || true
+  echo "==> Verifying signature (strict, deep)..."
+  codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 else
   echo "!! codesign not found; packaging WITHOUT a signature"
 fi

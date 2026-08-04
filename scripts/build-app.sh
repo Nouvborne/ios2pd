@@ -79,6 +79,3 @@ echo "==> Linking ios2pd"
 
 echo "==> App binary:"
 file "$APP_DIR/ios2pd"
-
-echo "==> Building NEAppProxyProvider extension"
-"$ROOT/scripts/build-extension.sh"
