@@ -9,10 +9,12 @@ Actions workflow (macOS runners, no Mac or Apple Developer account needed).
 * A real cross-compile of **i2pd 2.61.0** for `arm64` iOS (device):
   * `libi2pd.a`, `libi2pdclient.a`, `libi2pdlang.a`
   * plus OpenSSL, zlib and Boost statically linked for iOS.
-* A minimal UIKit app (`ios/main.mm`) that embeds the i2pd daemon core
-  (`DaemonUnix`) and runs the router on a background thread, with a Start/Stop
-  button, a live log view and a VPN status line. HTTP proxy (:4444), SOCKS
-  proxy (:4447) and the SAM bridge (:7656) are enabled.
+* A UIKit app (`ios/main.mm`) that embeds the i2pd daemon core (`DaemonUnix`)
+  and runs the router on a background thread, with three tabs: **Router**
+  (Start/Stop, VPN status, live log), **i2pd** (enable + port for the HTTP
+  proxy :4444, SOCKS :4447 and SAM :7656, log level) and **Proxy**
+  (backloop.dev SSL + one-tap `.mobileconfig` install, optional silent-audio
+  background keep-alive).
 * A bundled **NEAppProxyProvider** (`ios/ext/`) — a "VPN" that routes
   `*.i2p` traffic through the local i2pd SOCKS proxy. When the VPN is enabled
   in Settings and the router is running, Safari and other apps can open
@@ -68,11 +70,33 @@ entitlement, so the VPN toggle won't appear.
 5. Keep ios2pd open in the foreground — iOS suspends backgrounded apps, which
    stops the router (see caveats).
 
+## Using the backloop.dev Wi-Fi proxy (no paid account needed)
+
+If you don't have a paid Apple Developer account, the VPN toggle won't appear
+(see above). Instead, the **Proxy** tab installs a Wi-Fi profile that routes
+all HTTP/HTTPS traffic through the local i2pd HTTP proxy via
+[backloop.dev](https://backloop.dev) — a wildcard domain that resolves to
+`127.0.0.1` with a publicly trusted (publicly known) loopback certificate.
+
+1. Sign and install the IPA with any free Apple ID (Sideloadly/AltStore).
+2. Launch ios2pd, open the **Router** tab and tap **Start**; wait for the log
+   to show tunnels are built.
+3. Open the **Proxy** tab → **Update SSL servers** (fetches the current
+   backloop.dev certificate) → **Install proxy profile (.mobileconfig)** and
+   approve the profile in Settings.
+4. Optionally enable **Keep i2pd alive in background** (plays silent audio so
+   iOS doesn't suspend the app; uses battery).
+5. Browse `*.i2p` sites in Safari over **Wi-Fi** (manual HTTP proxy
+   `ios2pd.backloop.dev:4444` → device loopback). This works on any free
+   Apple ID. Note: `*.i2p` hostnames only resolve through the i2pd HTTP proxy,
+   so this routes all browser traffic over I2P while enabled.
+
 ## Caveats
 
 * **Background execution:** iOS suspends apps that are not foregrounded, so
-  the router keeps running while the app is open but stops once the OS suspends
-  it. Keeping ios2pd foregrounded is required for the VPN to work.
+  the router stops once the OS suspends the app. The **Proxy → Keep i2pd alive
+  in background** switch (silent audio) mitigates this for the Wi-Fi proxy
+  workflow, at some battery cost.
 * **Runtime on device is experimental.** The build is verified to compile and
   package; networking behaviour (interface enumeration, tunnels, reseeding) on
   a real device depends on entitlements and iOS network policies.
