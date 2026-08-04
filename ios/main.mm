@@ -8,6 +8,7 @@
 
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#import <NetworkExtension/NetworkExtension.h>
 
 #include <atomic>
 #include <mutex>
@@ -98,6 +99,48 @@ std::string TakeLog() {
   return gLog;
 }
 
+// Installs (or updates) the NEAppProxyProvider VPN profile that routes *.i2p
+// traffic through the local i2pd SOCKS proxy. Requires the
+// com.apple.developer.networking.networkextension entitlement at signing time.
+void InstallVpnProfile() {
+  NEAppProxyProviderManager* mgr = [NEAppProxyProviderManager sharedManager];
+  [mgr loadFromPreferencesWithCompletionHandler:^(NSError* _Nullable err) {
+    NETunnelProviderProtocol* proto = [[NETunnelProviderProtocol alloc] init];
+    proto.providerBundleIdentifier = @"org.nouvborne.ios2pd.appproxy";
+    proto.serverAddress = @"i2pd";
+    proto.providerConfiguration = @{
+      @"proxyHost" : @"127.0.0.1",
+      @"proxyPort" : @4447,
+    };
+    mgr.protocolConfiguration = proto;
+    mgr.localizedDescription = @"ios2pd I2P VPN";
+    mgr.enabled = YES;
+    [mgr saveToPreferencesWithCompletionHandler:^(NSError* _Nullable saveErr) {
+      if (saveErr) {
+        NSLog(@"[ios2pd] VPN profile save failed: %@", saveErr);
+      }
+    }];
+  }];
+}
+
+NSString* VpnStatusString() {
+  NEVPNConnection* conn = [NEAppProxyProviderManager sharedManager].connection;
+  switch (conn.status) {
+    case NEVPNStatusInvalid:
+      return @"not configured";
+    case NEVPNStatusDisconnected:
+      return @"Disconnected";
+    case NEVPNStatusConnecting:
+      return @"Connecting";
+    case NEVPNStatusConnected:
+      return @"Connected";
+    case NEVPNStatusReconnecting:
+      return @"Reconnecting";
+    case NEVPNStatusDisconnecting:
+      return @"Disconnecting";
+  }
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -108,6 +151,7 @@ std::string TakeLog() {
 
 @implementation ViewController {
   UILabel* _status;
+  UILabel* _vpn;
   UIButton* _toggle;
   UITextView* _log;
   NSTimer* _timer;
@@ -127,7 +171,7 @@ std::string TakeLog() {
   [self.view addSubview:_status];
 
   _toggle = [UIButton buttonWithType:UIButtonTypeSystem];
-  _toggle.frame = CGRectMake(16, 104, bounds.size.width - 32, 44);
+  _toggle.frame = CGRectMake(16, 96, bounds.size.width - 32, 44);
   [_toggle setTitle:@"Start" forState:UIControlStateNormal];
   [_toggle setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
   _toggle.backgroundColor = [UIColor systemBlueColor];
@@ -136,7 +180,14 @@ std::string TakeLog() {
   _toggle.autoresizingMask = UIViewAutoresizingFlexibleWidth;
   [self.view addSubview:_toggle];
 
-  CGFloat y = 158;
+  _vpn = [[UILabel alloc] initWithFrame:CGRectMake(16, 148, bounds.size.width - 32, 24)];
+  _vpn.text = @"VPN: not configured — enable in Settings > VPN";
+  _vpn.font = [UIFont systemFontOfSize:13];
+  _vpn.textColor = [UIColor secondaryLabelColor];
+  _vpn.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+  [self.view addSubview:_vpn];
+
+  CGFloat y = 182;
   _log = [[UITextView alloc] initWithFrame:CGRectMake(8, y, bounds.size.width - 16, bounds.size.height - y - 8)];
   _log.editable = NO;
   _log.selectable = YES;
@@ -162,6 +213,7 @@ std::string TakeLog() {
     if (StartDaemon()) {
       _status.text = @"i2pd: starting...";
       [_toggle setTitle:@"Stop" forState:UIControlStateNormal];
+      InstallVpnProfile();
     } else {
       _status.text = @"i2pd: failed to start";
     }
@@ -180,6 +232,8 @@ std::string TakeLog() {
   if (gStarted.load()) {
     _status.text = @"i2pd: running";
   }
+  _vpn.text = [NSString stringWithFormat:@"VPN: %@ — toggle in Settings > VPN",
+                                         VpnStatusString()];
 }
 
 @end

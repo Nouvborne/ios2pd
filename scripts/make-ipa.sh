@@ -20,10 +20,16 @@ python3 "$ROOT/ios/make_icon.py" "$APP_DIR"
 # ---------------------------------------------------------------- validate
 echo "==> Bundle contents:"
 ls -la "$APP_DIR"
+echo "==> Extension:"
+ls -la "$APP_DIR/PlugIns/ios2pdProxy.appex" 2>/dev/null || echo "!! no extension found"
 echo "==> Binary arch:"
 file "$APP_DIR/ios2pd"
 echo "==> Info.plist:"
 plutil -p "$APP_DIR/Info.plist"
+
+# Ship the entitlements alongside the bundle so Sideloadly/AltStore users can
+# apply them (com.apple.developer.networking.networkextension) when signing.
+cp "$ROOT/ios/entitlements.plist" "$APP_DIR/entitlements.plist"
 
 # ---------------------------------------------------------------- codesign
 # Sideloaders (AltStore/Sideloadly/TrollStore) refuse a bundle with NO code
