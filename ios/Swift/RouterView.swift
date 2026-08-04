@@ -111,7 +111,7 @@ struct RouterView: View {
             starting = false
             running = I2pdCore.routerRunning
             if ok && running {
-                detail = String(format: "%d tunnels configured", I2pdCore.tunnels.count)
+                detail = String(format: "%d tunnels configured", I2pdCore.tunnels().count)
             } else {
                 detail = "Failed to start - see log"
             }

@@ -63,7 +63,7 @@ struct ProxyView: View {
                             .multilineTextAlignment(.trailing)
                     }
                     Button("Detect current SSID") {
-                        if let detected = I2pdCore.detectedSSID, !detected.isEmpty {
+                        if let detected = I2pdCore.detectedSSID(), !detected.isEmpty {
                             ssid = detected
                         }
                     }
@@ -141,7 +141,8 @@ struct ProxyView: View {
             var ok = false
             var message = ""
             do {
-                ok = try I2pdCore.refreshSsl()
+                try I2pdCore.refreshSsl()
+                ok = true
             } catch {
                 message = error.localizedDescription
             }
@@ -170,7 +171,8 @@ struct ProxyView: View {
             DispatchQueue.global(qos: .userInitiated).async {
                 var ready = false
                 do {
-                    ready = try I2pdCore.refreshSsl()
+                    try I2pdCore.refreshSsl()
+                    ready = true
                 } catch {
                     // message is surfaced below
                 }

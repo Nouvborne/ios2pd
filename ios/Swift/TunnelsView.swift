@@ -15,7 +15,7 @@ struct TunnelModel {
 
     init() {}
 
-    init(dict: [String: Any]) {
+    init(dict: [AnyHashable: Any]) {
         name = dict["name"] as? String ?? ""
         type = dict["type"] as? String ?? "client"
         port = String(describing: dict["port"] ?? "0")
@@ -27,8 +27,8 @@ struct TunnelModel {
         keys = dict["keys"] as? String ?? ""
     }
 
-    var dictionary: [String: Any] {
-        var d: [String: Any] = ["name": name, "type": type, "port": port]
+    var dictionary: [AnyHashable: Any] {
+        var d: [AnyHashable: Any] = ["name": name, "type": type, "port": port]
         if type == "client" || type == "socks" { d["address"] = address }
         if type == "client" {
             d["destination"] = destination
@@ -50,18 +50,18 @@ struct EditorPayload: Identifiable {
 }
 
 struct TunnelsView: View {
-    @State private var tunnels: [[String: Any]] = I2pdCore.tunnels
+    @State private var tunnels: [[AnyHashable: Any]] = I2pdCore.tunnels()
     @State private var editor: EditorPayload?
     @State private var showTypePicker = false
 
-    private var clientTunnels: [(dict: [String: Any], index: Int)] {
+    private var clientTunnels: [(dict: [AnyHashable: Any], index: Int)] {
         tunnels.enumerated().compactMap { idx, t in
             let type = t["type"] as? String ?? "client"
             return (type == "client" || type == "socks") ? (t, idx) : nil
         }
     }
 
-    private var serverTunnels: [(dict: [String: Any], index: Int)] {
+    private var serverTunnels: [(dict: [AnyHashable: Any], index: Int)] {
         tunnels.enumerated().compactMap { idx, t in
             let type = t["type"] as? String ?? "client"
             return (type == "server" || type == "http") ? (t, idx) : nil
@@ -129,7 +129,7 @@ struct TunnelsView: View {
         }
     }
 
-    private func tunnelRow(_ t: [String: Any]) -> some View {
+    private func tunnelRow(_ t: [AnyHashable: Any]) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(t["name"] as? String ?? "?")
@@ -146,7 +146,7 @@ struct TunnelsView: View {
         .padding(.vertical, 2)
     }
 
-    private func subtitle(for t: [String: Any]) -> String {
+    private func subtitle(for t: [AnyHashable: Any]) -> String {
         let type = t["type"] as? String ?? "client"
         let address = t["address"] as? String ?? "127.0.0.1"
         let port = String(describing: t["port"] ?? "0")
@@ -162,8 +162,8 @@ struct TunnelsView: View {
         }
     }
 
-    private func delete(from items: [(dict: [String: Any], index: Int)], offsets: IndexSet) {
-        var list = I2pdCore.tunnels
+    private func delete(from items: [(dict: [AnyHashable: Any], index: Int)], offsets: IndexSet) {
+        var list = I2pdCore.tunnels()
         for offset in offsets {
             let index = items[offset].index
             if index >= 0 && index < list.count {
@@ -182,7 +182,7 @@ struct TunnelsView: View {
     }
 
     private func addPostmanPreset() {
-        var list = I2pdCore.tunnels
+        var list = I2pdCore.tunnels()
         list.append(TunnelModel(dict: [
             "name": "mail-smtp", "type": "client",
             "address": "127.0.0.1", "port": "515",
@@ -198,7 +198,7 @@ struct TunnelsView: View {
     }
 
     private func reload() {
-        tunnels = I2pdCore.tunnels
+        tunnels = I2pdCore.tunnels()
     }
 }
 
@@ -298,7 +298,7 @@ struct TunnelEditorView: View {
            model.destination.trimmingCharacters(in: .whitespaces).isEmpty {
             return
         }
-        var list = I2pdCore.tunnels
+        var list = I2pdCore.tunnels()
         if let index = index, index >= 0 && index < list.count {
             list[index] = model.dictionary
         } else {
