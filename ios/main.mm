@@ -1799,7 +1799,11 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
 // ---------------------------------------------------------------------------
 // Proxy / app settings tab
 // ---------------------------------------------------------------------------
-@class I2pBrowserViewController;
+@interface I2pBrowserViewController : UIViewController <WKNavigationDelegate,
+                                                       UITextFieldDelegate>
+@property (nonatomic, copy) NSString* initialURL;
+- (instancetype)initWithDirect:(BOOL)direct;
+@end
 
 @interface AppSettingsViewController : UITableViewController <UITextFieldDelegate>
 @property (nonatomic, assign) BOOL busy;
@@ -2300,12 +2304,8 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
 
 @end
 
-@interface I2pBrowserViewController : UIViewController <WKNavigationDelegate,
-                                                       UITextFieldDelegate>
-@property (nonatomic, copy) NSString* initialURL;
-- (instancetype)initWithDirect:(BOOL)direct;
-@end
-
+// I2pBrowserViewController is declared above (near the Proxy tab) so the
+// Proxy tab can push a direct-mode browser for the web console.
 @implementation I2pBrowserViewController {
   UITextField* _address;
   WKWebView* _web;
