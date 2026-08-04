@@ -37,6 +37,14 @@ cp "$ROOT/ios/entitlements.plist" "$APP_DIR/entitlements.plist"
 # various re-signing tools accept it; they swap in their own cert later.
 rm -rf "$APP_DIR/_CodeSignature"
 if command -v codesign >/dev/null 2>&1; then
+  echo "==> Ad-hoc codesigning extension..."
+  if [ -d "$APP_DIR/PlugIns/ios2pdProxy.appex" ]; then
+    rm -rf "$APP_DIR/PlugIns/ios2pdProxy.appex/_CodeSignature"
+    codesign --force --sign - "$APP_DIR/PlugIns/ios2pdProxy.appex"
+    codesign -dv "$APP_DIR/PlugIns/ios2pdProxy.appex" 2>&1 || true
+  else
+    echo "!! no extension found; skipping appex signing"
+  fi
   echo "==> Ad-hoc codesigning bundle..."
   codesign --force --sign - "$APP_DIR"
   codesign -dv "$APP_DIR" 2>&1 || true
