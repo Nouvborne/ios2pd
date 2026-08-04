@@ -474,10 +474,12 @@ static int openSocket(NSString* host,
 
 - (BOOL)handleNewFlow:(NEAppProxyFlow*)flow {
   NEAppProxyTCPFlow* tcp = (NEAppProxyTCPFlow*)flow;
-  NWEndpoint* ep = tcp.remoteEndpoint;
   NSString* host = nil;
   uint16_t port = 0;
-  nw_endpoint_t nep = (__bridge nw_endpoint_t)ep;
+  nw_endpoint_t nep = NULL;
+  if (@available(iOS 18.0, *)) {
+    nep = tcp.remoteFlowEndpoint;
+  }
   if (nep) {
     nw_endpoint_type_t et = nw_endpoint_get_type(nep);
     if (et == nw_endpoint_type_host) {
