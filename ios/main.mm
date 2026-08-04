@@ -28,6 +28,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <SystemConfiguration/CaptiveNetwork.h>
+#import <WebKit/WebKit.h>
 
 #include <atomic>
 #include <mutex>
@@ -1803,6 +1804,325 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
 @end
 
 // ---------------------------------------------------------------------------
+// I2P browser tab (fallback that works without the Wi-Fi proxy profile)
+//
+// WKWebView loads pages through two custom URL schemes (i2p-http / i2p-https).
+// The scheme handler fetches each request through the local i2pd HTTP proxy at
+// 127.0.0.1:<httpproxy port>, so *.i2p sites work without installing the
+// mobileconfig profile. TLS server certs are trusted for self-signed eepsites.
+// ---------------------------------------------------------------------------
+@interface I2pSchemeHandler : NSObject <WKURLSchemeHandler, NSURLSessionDelegate>
+@end
+
+@implementation I2pSchemeHandler {
+  NSMutableDictionary<NSNumber*, NSURLSessionDataTask*>* _tasks;
+  NSURLSession* _session;
+}
+
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _tasks = [NSMutableDictionary dictionary];
+    NSURLSessionConfiguration* cfg =
+        [NSURLSessionConfiguration defaultSessionConfiguration];
+    cfg.connectionProxyDictionary = @{
+      @"HTTPEnable" : @YES,
+      @"HTTPProxy" : @"127.0.0.1",
+      @"HTTPPort" : @(SettingInt(kHttpPort, 4444)),
+      @"HTTPSEnable" : @YES,
+      @"HTTPSProxy" : @"127.0.0.1",
+      @"HTTPSPort" : @(SettingInt(kHttpPort, 4444)),
+    };
+    cfg.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    cfg.timeoutIntervalForRequest = 60;
+    _session = [NSURLSession sessionWithConfiguration:cfg
+                                             delegate:self
+                                        delegateQueue:nil];
+  }
+  return self;
+}
+
+- (NSURL*)targetURLForTask:(id<WKURLSchemeTask>)task {
+  NSURL* u = task.request.URL;
+  NSURLComponents* c =
+      [NSURLComponents componentsWithURL:u resolvingAgainstBaseURL:NO];
+  c.scheme = [u.scheme isEqualToString:@"i2p-https"] ? @"https" : @"http";
+  return c.URL;
+}
+
+- (void)webView:(WKWebView*)webView startURLSchemeTask:(id<WKURLSchemeTask>)task {
+  NSURL* target = [self targetURLForTask:task];
+  NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:target];
+  NSDictionary* headers = task.request.allHTTPHeaderFields;
+  for (NSString* key in headers) {
+    if ([key caseInsensitiveCompare:@"Host"] == NSOrderedSame) continue;
+    if ([key caseInsensitiveCompare:@"Accept-Encoding"] == NSOrderedSame) continue;
+    if ([key caseInsensitiveCompare:@"Cookie"] == NSOrderedSame) continue;
+    [req setValue:headers[key] forHTTPHeaderField:key];
+  }
+  [req setValue:nil forHTTPHeaderField:@"Accept-Encoding"];
+
+  NSURLSessionDataTask* dt =
+      [_session dataTaskWithRequest:req
+                  completionHandler:^(NSData* data, NSURLResponse* resp,
+                                      NSError* err) {
+                    [_tasks removeObjectForKey:@(task.hash)];
+                    if (err) {
+                      [task didFailWithError:err];
+                      return;
+                    }
+                    NSHTTPURLResponse* http = (NSHTTPURLResponse*)resp;
+                    if (http.statusCode >= 400) {
+                      [task didFailWithError:[NSError
+                          errorWithDomain:NSURLErrorDomain
+                                     code:http.statusCode
+                                 userInfo:@{
+                                   NSLocalizedDescriptionKey :
+                                       [NSHTTPURLResponse
+                                           localizedStringForStatusCode:
+                                               http.statusCode]
+                                 }]];
+                      return;
+                    }
+                    NSURLResponse* out =
+                        [[NSURLResponse alloc] initWithURL:task.request.URL
+                                                  MIMEType:resp.MIMEType
+                                     expectedContentLength:data.length
+                                          textEncodingName:resp.textEncodingName];
+                    [task didReceiveResponse:out];
+                    if (data.length) [task didReceiveData:data];
+                    [task didFinish];
+                  }];
+  if (dt) {
+    _tasks[@(task.hash)] = dt;
+    [dt resume];
+  } else {
+    [task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain
+                                               code:NSURLErrorCannotLoadFromNetwork
+                                           userInfo:nil]];
+  }
+}
+
+- (void)webView:(WKWebView*)webView stopURLSchemeTask:(id<WKURLSchemeTask>)task {
+  NSURLSessionDataTask* dt = _tasks[@(task.hash)];
+  if (dt) {
+    [dt cancel];
+    [_tasks removeObjectForKey:@(task.hash)];
+  }
+}
+
+// Eepsites often use self-signed or unknown-CA certificates.
+- (void)URLSession:(NSURLSession*)session
+    didReceiveChallenge:(NSURLAuthenticationChallenge*)challenge
+      completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition,
+                                  NSURLCredential*))completionHandler {
+  if ([challenge.protectionSpace.authenticationMethod
+          isEqualToString:NSURLAuthenticationMethodServerTrust]) {
+    SecTrustRef trust = challenge.protectionSpace.serverTrust;
+    if (trust) {
+      completionHandler(NSURLSessionAuthChallengeUseCredential,
+                        [NSURLCredential credentialForTrust:trust]);
+      return;
+    }
+  }
+  completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+}
+
+@end
+
+@interface I2pBrowserViewController : UIViewController <WKNavigationDelegate,
+                                                       UITextFieldDelegate>
+@end
+
+@implementation I2pBrowserViewController {
+  UITextField* _address;
+  WKWebView* _web;
+  UIToolbar* _bar;
+  UIActivityIndicatorView* _spinner;
+  I2pSchemeHandler* _handler;
+}
+
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  self.view.backgroundColor = [UIColor systemBackgroundColor];
+  self.navigationItem.title = @"I2P Browser";
+
+  UILayoutGuide* safe = self.view.safeAreaLayoutGuide;
+
+  GlassCard* card = [[GlassCard alloc] initWithFrame:CGRectZero];
+  card.translatesAutoresizingMaskIntoConstraints = NO;
+  [self.view addSubview:card];
+
+  _address = [[UITextField alloc] initWithFrame:CGRectZero];
+  _address.placeholder = @"example.i2p";
+  _address.keyboardType = UIKeyboardTypeURL;
+  _address.autocapitalizationType = UITextAutocapitalizationTypeNone;
+  _address.autocorrectionType = UITextAutocorrectionTypeNo;
+  _address.returnKeyType = UIReturnKeyGo;
+  _address.clearButtonMode = UITextFieldViewModeWhileEditing;
+  _address.font = [UIFont systemFontOfSize:16];
+  _address.textColor = [UIColor labelColor];
+  _address.delegate = self;
+  _address.translatesAutoresizingMaskIntoConstraints = NO;
+  [card.contentView addSubview:_address];
+
+  _spinner = [[UIActivityIndicatorView alloc]
+      initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+  _spinner.hidesWhenStopped = YES;
+  _spinner.translatesAutoresizingMaskIntoConstraints = NO;
+  [card.contentView addSubview:_spinner];
+
+  WKWebViewConfiguration* wc = [[WKWebViewConfiguration alloc] init];
+  _handler = [[I2pSchemeHandler alloc] init];
+  [wc setURLSchemeHandler:_handler forURLScheme:@"i2p-http"];
+  [wc setURLSchemeHandler:_handler forURLScheme:@"i2p-https"];
+  _web = [[WKWebView alloc] initWithFrame:CGRectZero configuration:wc];
+  _web.navigationDelegate = self;
+  _web.allowsBackForwardNavigationGestures = YES;
+  _web.translatesAutoresizingMaskIntoConstraints = NO;
+  [self.view addSubview:_web];
+
+  _bar = [[UIToolbar alloc] initWithFrame:CGRectZero];
+  _bar.translatesAutoresizingMaskIntoConstraints = NO;
+  [self.view addSubview:_bar];
+  UIBarButtonItem* back = [[UIBarButtonItem alloc]
+      initWithImage:[UIImage systemImageNamed:@"chevron.backward"]
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(goBack:)];
+  UIBarButtonItem* fwd = [[UIBarButtonItem alloc]
+      initWithImage:[UIImage systemImageNamed:@"chevron.forward"]
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(goForward:)];
+  UIBarButtonItem* reload = [[UIBarButtonItem alloc]
+      initWithImage:[UIImage systemImageNamed:@"arrow.clockwise"]
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(reloadPage:)];
+  _bar.items = @[
+    back, [[UIBarButtonItem alloc] initWithBarButtonSystemItem:
+               UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
+    fwd, [[UIBarButtonItem alloc] initWithBarButtonSystemItem:
+               UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
+    reload,
+  ];
+
+  [NSLayoutConstraint activateConstraints:@[
+    [card.topAnchor constraintEqualToAnchor:safe.topAnchor constant:8],
+    [card.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:16],
+    [card.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16],
+    [card.heightAnchor constraintEqualToConstant:44],
+    [_address.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor
+                                           constant:14],
+    [_address.centerYAnchor constraintEqualToAnchor:card.contentView.centerYAnchor],
+    [_spinner.leadingAnchor constraintEqualToAnchor:_address.trailingAnchor constant:8],
+    [_spinner.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor
+                                             constant:-14],
+    [_spinner.centerYAnchor constraintEqualToAnchor:card.contentView.centerYAnchor],
+    [_web.topAnchor constraintEqualToAnchor:card.bottomAnchor constant:8],
+    [_web.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+    [_web.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    [_bar.topAnchor constraintEqualToAnchor:_web.bottomAnchor],
+    [_bar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+    [_bar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    [_bar.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+  ]];
+}
+
+- (NSString*)displayURLForURL:(NSURL*)u {
+  NSURLComponents* c =
+      [NSURLComponents componentsWithURL:u resolvingAgainstBaseURL:NO];
+  if ([u.scheme isEqualToString:@"i2p-https"]) c.scheme = @"https";
+  else if ([u.scheme isEqualToString:@"i2p-http"]) c.scheme = @"http";
+  return c.URL.absoluteString;
+}
+
+- (void)go:(id)sender {
+  NSString* raw = [_address.text stringByTrimmingCharactersInSet:
+      [NSCharacterSet whitespaceCharacterSet]];
+  if (!raw.length) return;
+  if (!gStarted.load()) {
+    [self alert:@"Start the router (Router tab) before browsing."];
+    return;
+  }
+  NSURL* u = [NSURL URLWithString:raw];
+  if (!u.scheme.length) u = [NSURL URLWithString:[@"http://" stringByAppendingString:raw]];
+  NSString* scheme = u.scheme.lowercaseString;
+  if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) {
+    NSURLComponents* c =
+        [NSURLComponents componentsWithURL:u resolvingAgainstBaseURL:NO];
+    c.scheme = [scheme isEqualToString:@"https"] ? @"i2p-https" : @"i2p-http";
+    [_web loadRequest:[NSURLRequest requestWithURL:c.URL]];
+  } else if ([scheme hasPrefix:@"i2p-"]) {
+    [_web loadRequest:[NSURLRequest requestWithURL:u]];
+  } else {
+    [self alert:@"Enter an http(s) URL such as example.i2p"];
+  }
+  [_address resignFirstResponder];
+}
+
+- (BOOL)textFieldShouldReturn:(UITextField*)field {
+  [self go:nil];
+  return YES;
+}
+
+- (void)goBack:(id)sender { [_web goBack]; }
+- (void)goForward:(id)sender { [_web goForward]; }
+- (void)reloadPage:(id)sender { [_web reload]; }
+
+- (void)webView:(WKWebView*)webView
+    decidePolicyForNavigationAction:(WKNavigationAction*)action
+                  decisionHandler:(void (^)(WKNavigationActionPolicy))handler {
+  NSURL* u = action.request.URL;
+  if (!u) { handler(WKNavigationActionPolicyAllow); return; }
+  NSString* scheme = u.scheme;
+  if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) {
+    if (action.targetFrame && action.targetFrame.mainFrame) {
+      NSURLComponents* c =
+          [NSURLComponents componentsWithURL:u resolvingAgainstBaseURL:NO];
+      c.scheme = [scheme isEqualToString:@"https"] ? @"i2p-https" : @"i2p-http";
+      NSURL* rewritten = c.URL;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [webView loadRequest:[NSURLRequest requestWithURL:rewritten]];
+      });
+    }
+    handler(WKNavigationActionPolicyCancel);
+    return;
+  }
+  handler(WKNavigationActionPolicyAllow);
+}
+
+- (void)webView:(WKWebView*)webView didStartProvisionalNavigation:(WKNavigation*)n {
+  [_spinner startAnimating];
+}
+
+- (void)webView:(WKWebView*)webView didFinishNavigation:(WKNavigation*)n {
+  [_spinner stopAnimating];
+  _address.text = [self displayURLForURL:_web.URL];
+}
+
+- (void)webView:(WKWebView*)webView didFailNavigation:(WKNavigation*)n
+       withError:(NSError*)e {
+  [_spinner stopAnimating];
+}
+
+- (void)webView:(WKWebView*)webView didFailProvisionalNavigation:(WKNavigation*)n
+       withError:(NSError*)e {
+  [_spinner stopAnimating];
+}
+
+- (void)alert:(NSString*)message {
+  UIAlertController* a = [UIAlertController alertControllerWithTitle:@"ios2pd"
+                                                              message:message
+                                                       preferredStyle:UIAlertControllerStyleAlert];
+  [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+  [self presentViewController:a animated:YES completion:nil];
+}
+
+@end
+
+// ---------------------------------------------------------------------------
 // App delegate
 // ---------------------------------------------------------------------------
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
@@ -1837,6 +2157,10 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
   router.title = @"Router";
   router.tabBarItem.image = [UIImage systemImageNamed:@"network"];
 
+  I2pBrowserViewController* browser = [[I2pBrowserViewController alloc] init];
+  browser.title = @"Browser";
+  browser.tabBarItem.image = [UIImage systemImageNamed:@"safari"];
+
   TunnelsViewController* tunnels = [[TunnelsViewController alloc] init];
   tunnels.title = @"Tunnels";
   tunnels.tabBarItem.image = [UIImage systemImageNamed:@"arrow.up.arrow.down"];
@@ -1850,12 +2174,14 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
   proxy.tabBarItem.image = [UIImage systemImageNamed:@"globe"];
 
   UINavigationController* n1 = [[UINavigationController alloc] initWithRootViewController:router];
+  UINavigationController* nBrowser =
+      [[UINavigationController alloc] initWithRootViewController:browser];
   UINavigationController* n2 = [[UINavigationController alloc] initWithRootViewController:tunnels];
   UINavigationController* n3 = [[UINavigationController alloc] initWithRootViewController:i2pd];
   UINavigationController* n4 = [[UINavigationController alloc] initWithRootViewController:proxy];
 
   UITabBarController* tbc = [[UITabBarController alloc] init];
-  tbc.viewControllers = @[ n1, n2, n3, n4 ];
+  tbc.viewControllers = @[ n1, nBrowser, n2, n3, n4 ];
 
   self.window.rootViewController = tbc;
   [self.window makeKeyAndVisible];

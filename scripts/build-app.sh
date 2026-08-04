@@ -71,6 +71,7 @@ FRAMEWORKS=(
   -framework AVFoundation
   -framework SystemConfiguration
   -framework QuartzCore
+  -framework WebKit
 )
 
 echo "==> Linking ios2pd"
