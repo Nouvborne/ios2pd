@@ -12,7 +12,7 @@ IOS_CMAKE_DIR="$BUILD_DIR/ios-cmake"
 IOS_CMAKE_TAG="4.5.0"
 
 ARCH="arm64"
-MIN_IOS="13.0"
+MIN_IOS="15.0"
 TARGET="arm64-apple-ios${MIN_IOS}"
 
 SDK_ROOT="$(xcrun --sdk iphoneos --show-sdk-path)"

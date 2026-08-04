@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   build-ipa:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 180
     steps:
       - name: Checkout
@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/deps-ios
-          key: deps-ios-${{ runner.os }}-${{ hashFiles('scripts/build-deps.sh') }}
+          key: deps-ios-${{ runner.os }}-ios15-${{ hashFiles('scripts/build-deps.sh') }}
 
       - name: Build OpenSSL / Boost / zlib for iOS
         if: steps.cache-deps.outputs.cache-hit != 'true'

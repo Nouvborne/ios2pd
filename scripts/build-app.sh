@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Compiles the iOS app (daemon core + UIKit shell) and assembles ios2pd.app.
+# Compiles the iOS app (daemon core + I2pdCore.mm + SwiftUI shell) and
+# assembles ios2pd.app.
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
+
+SWIFTC="$(xcrun --find swiftc)"
 
 APP_DIR="$BUILD_DIR/ios2pd.app"
 OBJ_DIR="$BUILD_DIR/obj"
@@ -28,6 +31,7 @@ COMMON_FLAGS=(
   -Wno-unused-variable
 )
 
+# ------------------------------------------------------------------ C++/ObjC
 SOURCES=(
   "$I2PD_DIR/daemon/Daemon.cpp"
   "$I2PD_DIR/daemon/UnixDaemon.cpp"
@@ -35,7 +39,7 @@ SOURCES=(
   "$I2PD_DIR/daemon/I2PControl.cpp"
   "$I2PD_DIR/daemon/I2PControlHandlers.cpp"
   "$I2PD_DIR/daemon/UPnP.cpp"
-  "$ROOT/ios/main.mm"
+  "$ROOT/ios/I2pdCore.mm"
 )
 
 OBJS=()
@@ -47,6 +51,21 @@ for src in "${SOURCES[@]}"; do
   OBJS+=("$obj")
 done
 for pid in "${PIDS[@]}"; do wait "$pid"; done
+
+# ------------------------------------------------------------------- Swift
+echo "==> Compiling SwiftUI module"
+SWIFT_SRC=("$ROOT"/ios/Swift/*.swift)
+"$SWIFTC" \
+  -parse-as-library \
+  -whole-module-optimization \
+  -target "$TARGET" \
+  -sdk "$SDK_ROOT" \
+  -O \
+  -swift-version 5 \
+  -import-objc-header "$ROOT/ios/ios2pd-Bridging-Header.h" \
+  -emit-object \
+  -o "$OBJ_DIR/ios2pd-swift.o" \
+  "${SWIFT_SRC[@]}"
 
 LIBS=(
   "$BUILD_DIR/i2pd-ios/libi2pdlang.a"
@@ -63,6 +82,7 @@ LIBS=(
 
 FRAMEWORKS=(
   -framework UIKit
+  -framework SwiftUI
   -framework CoreGraphics
   -framework Foundation
   -framework CoreFoundation
@@ -75,7 +95,15 @@ FRAMEWORKS=(
 )
 
 echo "==> Linking ios2pd"
-"$CXX" "${COMMON_FLAGS[@]}" -o "$APP_DIR/ios2pd" "${OBJS[@]}" "${LIBS[@]}" "${FRAMEWORKS[@]}"
+"$SWIFTC" \
+  -target "$TARGET" \
+  -sdk "$SDK_ROOT" \
+  "${OBJS[@]}" \
+  "$OBJ_DIR/ios2pd-swift.o" \
+  "${LIBS[@]}" \
+  "${FRAMEWORKS[@]}" \
+  -lc++ \
+  -o "$APP_DIR/ios2pd"
 
 echo "==> App binary:"
 file "$APP_DIR/ios2pd"

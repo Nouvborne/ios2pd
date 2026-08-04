@@ -9,26 +9,28 @@ Actions workflow (macOS runners, no Mac or Apple Developer account needed).
 * A real cross-compile of **i2pd 2.61.0** for `arm64` iOS (device):
   * `libi2pd.a`, `libi2pdclient.a`, `libi2pdlang.a`
   * plus OpenSSL, zlib and Boost statically linked for iOS.
-* A UIKit app (`ios/main.mm`) that embeds the i2pd daemon core (`DaemonUnix`)
-  and runs the router on a background thread, with tabs: **Router**
+* A SwiftUI app (`ios/Swift/`) that embeds the i2pd daemon core (`DaemonUnix`)
+  behind an ObjC bridge (`ios/I2pdCore.mm`) and runs the router on a
+  background thread, with tabs: **Router**
   (Start/Stop, live log), **Browser** (in-app `.i2p` browser through the local
   HTTP proxy), **Tunnels** (custom tunnels editor), **i2pd** (enable + port for
   the HTTP proxy :4444, SOCKS :4447 and SAM :7656, log level) and **Proxy**
   (backloop.dev SSL + one-tap `.mobileconfig` install, optional silent-audio
-  background keep-alive).
+  background keep-alive). The UI uses Liquid Glass (`glassEffect`) on iOS 26+
+  with a material fallback on older iOS; minimum iOS is 15.0.
 * A CI pipeline that produces an **unsigned IPA** — a `Payload/ios2pd.app`
   bundle with a valid ad-hoc signature (for sideloader compatibility) —
   downloadable as a workflow artifact.
 
 ## Build
 
-Everything runs in CI on `macos-15` runners. To run it locally you need a Mac
+Everything runs in CI on `macos-26` runners. To run it locally you need a Mac
 with Xcode + command line tools:
 
 ```sh
 ./scripts/build-deps.sh        # OpenSSL 3.0.16, zlib 1.3.1, Boost 1.85.0 (arm64 iOS)
 ./scripts/build-i2pd.sh        # cmake + leetal/ios-cmake -> i2pd static libs
-./scripts/build-app.sh         # daemon core + UIKit shell + app-proxy extension -> ios2pd.app
+./scripts/build-app.sh         # daemon core + I2pdCore.mm + SwiftUI shell -> ios2pd.app
 ./scripts/make-ipa.sh          # assemble bundle + package ios2pd-unsigned.ipa
 ```
 
@@ -102,7 +104,8 @@ all HTTP/HTTPS traffic through the local i2pd HTTP proxy via
 ```
 .github/workflows/build-ipa.yml  CI pipeline (deps → libs → app → IPA)
 scripts/                         build scripts (macOS/Xcode)
-ios/main.mm                      UIKit shell + daemon bridge
+ios/I2pdCore.h, ios/I2pdCore.mm  ObjC bridge: daemon control, config, SSL server
+ios/Swift/                       SwiftUI app (Liquid Glass on iOS 26+)
 ios/Info.plist                   app bundle metadata
 ios/entitlements.plist           empty (no restricted entitlements; free-account friendly)
 ios/ext/                         NEAppProxyProvider (optional; not shipped in the default IPA)
