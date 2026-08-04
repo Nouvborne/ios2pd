@@ -11,8 +11,9 @@
 //   - i2pd     : daemon settings (HTTP/SOCKS/SAM proxies, log level,
 //                advanced i2pd.conf editor).
 //   - Proxy    : backloop.dev integration - install a Wi-Fi proxy profile
-//                (.mobileconfig), refresh the loopback SSL certificate, and
-//                keep i2pd alive in the background.
+//                (.mobileconfig), refresh the loopback SSL certificate, keep
+//                i2pd alive in the background, and open the i2pd web console
+//                (:7070) through the backloop HTTPS server.
 //
 //  The daemon is configured from two INI files that this app writes into
 //  <Documents>/i2pd:
@@ -31,6 +32,8 @@
 #import <WebKit/WebKit.h>
 
 #include <atomic>
+#include <cctype>
+#include <cstdlib>
 #include <mutex>
 #include <ostream>
 #include <sstream>
@@ -82,6 +85,7 @@ static NSString* const kBackloopPort = @"backloop_https_port";
 static NSString* const kKeepAlive = @"keepalive_audio";
 static NSString* const kSslNotAfter = @"backloop_notafter";
 static NSString* const kSsid = @"backloop_ssid";
+static NSString* const kConsolePort = @"i2pd_webconsole_port";
 static NSString* const kTunnels = @"tunnels";
 
 // ---------------------------------------------------------------------------
@@ -511,6 +515,7 @@ static NSData* HomeHtmlData(void) {
       @"<h2>ios2pd local server</h2>"
       @"<p>This HTTPS server runs on this device (loopback via backloop.dev).</p>"
       @"<p><a href=\"/install.mobileconfig\">Install the I2P proxy profile</a></p>"
+      @"<p><a href=\"/\">Open the i2pd web console (port 7070)</a></p>"
       @"<p>Proxy: <code>%@</code>:<code>%d</code></p>"
       @"<p>Start i2pd in the app, then browse <code>*.i2p</code> sites in Safari.</p>"
       @"</body></html>", host, port];
@@ -520,7 +525,257 @@ static NSData* HomeHtmlData(void) {
 static std::atomic<bool> gSslStop{false};
 static std::thread gSslThread;
 
-// Handles one accepted connection: TLS handshake, then serves /install.mobileconfig.
+// Web-console proxy: everything served over the backloop HTTPS server except
+// /install.mobileconfig is relayed to the i2pd web console on 127.0.0.1:7070,
+// so the panel is reachable in-app or in Safari at https://<host>:<port>/
+// with a publicly trusted certificate.
+
+struct PanelReq {
+  std::string method;
+  std::string target;
+  std::string body;
+  std::vector<std::pair<std::string, std::string>> headers;
+};
+
+static std::string Lower(std::string s) {
+  for (size_t i = 0; i < s.size(); ++i)
+    s[i] = (char)tolower((unsigned char)s[i]);
+  return s;
+}
+
+static std::string Trim(const std::string& s) {
+  size_t a = s.find_first_not_of(" \t\r\n");
+  if (a == std::string::npos) return "";
+  size_t b = s.find_last_not_of(" \t\r\n");
+  return s.substr(a, b - a + 1);
+}
+
+// Reads one HTTP/1.x request (request line + headers + body) from the TLS
+// connection. Body reads honor Content-Length, capped to stay safe.
+static bool ReadHttpRequest(SSL* ssl, PanelReq& req) {
+  std::string data;
+  char tmp[8192];
+  size_t headerEnd = std::string::npos;
+  while (headerEnd == std::string::npos) {
+    int n = SSL_read(ssl, tmp, sizeof(tmp));
+    if (n <= 0) break;
+    data.append(tmp, (size_t)n);
+    headerEnd = data.find("\r\n\r\n");
+    if (data.size() > (256 * 1024)) break;
+  }
+  if (headerEnd == std::string::npos) return false;
+  std::string head = data.substr(0, headerEnd);
+  req.body = data.substr(headerEnd + 4);
+
+  size_t eol = head.find("\r\n");
+  if (eol == std::string::npos) return false;
+  std::istringstream rl(head.substr(0, eol));
+  rl >> req.method >> req.target;
+  if (req.method.empty() || req.target.empty()) return false;
+
+  int contentLength = -1;
+  size_t pos = eol + 2;
+  while (pos < head.size()) {
+    size_t npos = head.find("\r\n", pos);
+    if (npos == std::string::npos) npos = head.size();
+    std::string line = head.substr(pos, npos - pos);
+    size_t colon = line.find(':');
+    if (colon != std::string::npos) {
+      req.headers.push_back(
+          {Lower(Trim(line.substr(0, colon))), Trim(line.substr(colon + 1))});
+      if (req.headers.back().first == "content-length")
+        contentLength = atoi(req.headers.back().second.c_str());
+    }
+    pos = npos + 2;
+  }
+  if (contentLength > 0) {
+    while (req.body.size() < (size_t)contentLength) {
+      int n = SSL_read(ssl, tmp, sizeof(tmp));
+      if (n <= 0) break;
+      req.body.append(tmp, (size_t)n);
+      if (req.body.size() > (4 * 1024 * 1024)) break;
+    }
+  }
+  return true;
+}
+
+static int ConnectLoopback(int port) {
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) return -1;
+  struct sockaddr_in a;
+  memset(&a, 0, sizeof(a));
+  a.sin_family = AF_INET;
+  a.sin_port = htons((uint16_t)port);
+  a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (connect(fd, (struct sockaddr*)&a, sizeof(a)) != 0) {
+    close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+// Appends one recv() to data unless it fails or the cap would be exceeded.
+static bool RecvSome(int fd, std::string& data, size_t cap) {
+  char tmp[16384];
+  ssize_t n = recv(fd, tmp, sizeof(tmp), 0);
+  if (n <= 0) return false;
+  data.append(tmp, (size_t)n);
+  return data.size() <= cap;
+}
+
+// Reads the full upstream response (headers + body) over a plain socket,
+// honoring Content-Length, chunked encoding, or read-until-EOF.
+static std::string ReadHttpResponse(int fd) {
+  std::string data;
+  size_t headerEnd = std::string::npos;
+  while (headerEnd == std::string::npos) {
+    if (!RecvSome(fd, data, 1024 * 1024)) break;
+    headerEnd = data.find("\r\n\r\n");
+  }
+  if (headerEnd == std::string::npos) return data;
+
+  std::string lowerHead = Lower(data.substr(0, headerEnd));
+  bool chunked = lowerHead.find("\r\ntransfer-encoding: chunked") !=
+                 std::string::npos;
+  int contentLength = -1;
+  {
+    size_t pos = 0;
+    while ((pos = lowerHead.find("\r\ncontent-length:", pos)) !=
+           std::string::npos) {
+      size_t eol = lowerHead.find("\r\n", pos);
+      contentLength =
+          atoi(Trim(lowerHead.substr(pos + 17, eol - (pos + 17))).c_str());
+      pos = eol;
+    }
+  }
+
+  if (chunked) {
+    while (data.find("\r\n0\r\n") == std::string::npos &&
+           data.find("\r\n0\r\n\r\n") == std::string::npos) {
+      if (!RecvSome(fd, data, 16 * 1024 * 1024)) break;
+    }
+  } else if (contentLength >= 0) {
+    size_t bodyStart = headerEnd + 4;
+    while (data.size() < bodyStart + (size_t)contentLength) {
+      if (!RecvSome(fd, data, bodyStart + (size_t)contentLength + 1)) break;
+    }
+  } else {
+    while (RecvSome(fd, data, 16 * 1024 * 1024)) {}
+  }
+  return data;
+}
+
+// Forwards a browser request to the i2pd web console and returns the raw
+// upstream response on success.
+static bool ForwardToPanel(int port, const PanelReq& req, std::string& out) {
+  int fd = ConnectLoopback(port);
+  if (fd < 0) return false;
+  std::string buf;
+  buf += req.method + " " + req.target + " HTTP/1.1\r\n";
+  buf += "Host: 127.0.0.1:" + std::to_string(port) + "\r\n";
+  for (auto& h : req.headers) {
+    const std::string& name = h.first;
+    if (name == "host" || name == "connection" || name == "keep-alive" ||
+        name == "proxy-connection" || name == "transfer-encoding" ||
+        name == "content-length" || name == "upgrade" || name == "te" ||
+        name == "trailer" || name == "accept-encoding")
+      continue;
+    buf += h.first + ": " + h.second + "\r\n";
+  }
+  if (!req.body.empty())
+    buf += "Content-Length: " + std::to_string(req.body.size()) + "\r\n";
+  buf += "Connection: close\r\n\r\n";
+  buf += req.body;
+  size_t sent = 0;
+  while (sent < buf.size()) {
+    ssize_t w = send(fd, buf.data() + sent, buf.size() - sent, MSG_NOSIGNAL);
+    if (w <= 0) break;
+    sent += (size_t)w;
+  }
+  if (sent < buf.size()) {
+    close(fd);
+    return false;
+  }
+  out = ReadHttpResponse(fd);
+  close(fd);
+  return true;
+}
+
+static bool PanelHeaderWorthKeeping(const std::string& name) {
+  return name == "content-type" || name == "set-cookie" ||
+         name == "location" || name == "content-disposition" ||
+         name == "cache-control" || name == "expires" || name == "pragma" ||
+         name == "content-security-policy" || name == "refresh" ||
+         name == "x-frame-options" || name == "x-content-type-options" ||
+         name == "content-encoding" || name == "etag" ||
+         name == "last-modified" || name == "vary" ||
+         name == "www-authenticate" || name == "retry-after" ||
+         name == "strict-transport-security";
+}
+
+// Rewrites an upstream HTTP response and sends it back over TLS.
+static void SendPanelResponse(SSL* ssl, const std::string& raw) {
+  size_t headerEnd = raw.find("\r\n\r\n");
+  if (headerEnd == std::string::npos) {
+    SSL_write(ssl, raw.data(), raw.size());
+    return;
+  }
+  std::string head = raw.substr(0, headerEnd);
+  std::string body = raw.substr(headerEnd + 4);
+  std::string lowerHead = Lower(head);
+  bool chunked =
+      lowerHead.find("\r\ntransfer-encoding: chunked") != std::string::npos;
+
+  std::string out;
+  size_t eol = head.find("\r\n");
+  std::string status =
+      (eol == std::string::npos) ? "HTTP/1.1 502 Bad Gateway"
+                                 : head.substr(0, eol);
+  if (status.find("HTTP/") == std::string::npos)
+    status = "HTTP/1.1 502 Bad Gateway";
+  out += status + "\r\n";
+
+  size_t pos = (eol == std::string::npos) ? head.size() : eol + 2;
+  while (pos < head.size()) {
+    size_t npos = head.find("\r\n", pos);
+    if (npos == std::string::npos) npos = head.size();
+    std::string line = head.substr(pos, npos - pos);
+    size_t colon = line.find(':');
+    if (colon != std::string::npos &&
+        PanelHeaderWorthKeeping(Lower(Trim(line.substr(0, colon)))))
+      out += line + "\r\n";
+    pos = npos + 2;
+  }
+  out += "Connection: close\r\n";
+  if (chunked) {
+    out += "Transfer-Encoding: chunked\r\n";
+  } else {
+    out += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+  }
+  out += "\r\n";
+  SSL_write(ssl, out.data(), out.size());
+  SSL_write(ssl, body.data(), body.size());
+}
+
+static std::string PanelErrorResponse(void) {
+  std::string body =
+      "<!doctype html><html><head><meta charset=\"utf-8\">"
+      "<title>ios2pd</title></head><body>"
+      "<h2>Web console unreachable</h2>"
+      "<p>The i2pd web console on 127.0.0.1:7070 is not responding. "
+      "Start the router and make sure [http] is enabled in i2pd.conf.</p>"
+      "</body></html>";
+  return "HTTP/1.1 502 Bad Gateway\r\n"
+         "Content-Type: text/html; charset=utf-8\r\n"
+         "Content-Length: " +
+         std::to_string(body.size()) +
+         "\r\n"
+         "Connection: close\r\n\r\n" +
+         body;
+}
+
+// Handles one accepted connection: TLS handshake, then serves
+// /install.mobileconfig or proxies everything else to the web console.
 static void HandleClient(int c) {
   NSString* dir = SslDirPath();
   SSL_CTX* ctx = SSL_CTX_new(TLS_server_method());
@@ -545,27 +800,19 @@ static void HandleClient(int c) {
     close(c);
     return;
   }
-  char buf[16384];
-  int n = SSL_read(ssl, buf, sizeof(buf) - 1);
-  if (n > 0) {
-    buf[n] = 0;
-    std::string req(buf, n);
-    std::string path = "/";
-    size_t sp = req.find(' ');
-    if (sp != std::string::npos) {
-      size_t sp2 = req.find(' ', sp + 1);
-      if (sp2 != std::string::npos) path = req.substr(sp + 1, sp2 - sp - 1);
-    }
-    NSData* body = nil;
-    NSString* ctype = @"text/html; charset=utf-8";
-    if (path == "/install.mobileconfig") {
-      NSError* e = nil;
-      body = MobileConfigData(&e);
-      if (!body) body = [@"" dataUsingEncoding:NSUTF8StringEncoding];
-      ctype = @"application/x-apple-aspen-config";
-    } else {
-      body = HomeHtmlData();
-    }
+  PanelReq req;
+  if (!ReadHttpRequest(ssl, req)) {
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+    close(c);
+    return;
+  }
+
+  if (req.target.find("/install.mobileconfig") == 0) {
+    NSError* e = nil;
+    NSData* body = MobileConfigData(&e);
+    if (!body) body = [@"" dataUsingEncoding:NSUTF8StringEncoding];
+    NSString* ctype = @"application/x-apple-aspen-config";
     std::string resp = "HTTP/1.1 200 OK\r\n"
                        "Content-Type: " + std::string(ctype.UTF8String) + "\r\n"
                        "Content-Length: " + std::to_string(body.length) + "\r\n"
@@ -573,6 +820,23 @@ static void HandleClient(int c) {
                        "\r\n";
     SSL_write(ssl, resp.data(), resp.size());
     SSL_write(ssl, body.bytes, body.length);
+  } else if (req.target.find("/home") == 0) {
+    NSData* body = HomeHtmlData();
+    std::string resp = "HTTP/1.1 200 OK\r\n"
+                       "Content-Type: text/html; charset=utf-8\r\n"
+                       "Content-Length: " + std::to_string(body.length) + "\r\n"
+                       "Connection: close\r\n"
+                       "\r\n";
+    SSL_write(ssl, resp.data(), resp.size());
+    SSL_write(ssl, body.bytes, body.length);
+  } else {
+    std::string up;
+    if (ForwardToPanel(SettingInt(kConsolePort, 7070), req, up)) {
+      SendPanelResponse(ssl, up);
+    } else {
+      std::string err = PanelErrorResponse();
+      SSL_write(ssl, err.data(), err.size());
+    }
   }
   SSL_free(ssl);
   SSL_CTX_free(ctx);
@@ -603,7 +867,7 @@ static void SslServerLoop(int port) {
     int pr = poll(&pfd, 1, 250);
     if (pr <= 0) continue;
     int c = accept(sock, nullptr, nullptr);
-    if (c >= 0) HandleClient(c);
+    if (c >= 0) std::thread([c]() { HandleClient(c); }).detach();
   }
   close(sock);
 }
@@ -1564,7 +1828,7 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView*)tableView {
-  return 5;
+  return 6;
 }
 
 - (NSInteger)tableView:(UITableView*)tableView numberOfRowsInSection:(NSInteger)section {
@@ -1574,6 +1838,7 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
     case 2: return 2;  // ssl expiry, update
     case 3: return 1;  // install profile
     case 4: return 1;  // keep alive
+    case 5: return 1;  // web console
     default: return 0;
   }
 }
@@ -1585,6 +1850,7 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
     case 2: return @"SSL certificate";
     case 3: return @"Proxy profile";
     case 4: return @"General";
+    case 5: return @"Web console";
     default: return nil;
   }
 }
@@ -1610,6 +1876,11 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
       return @"Without keep-alive, iOS suspends the app and the proxy stops. "
              @"Keep-alive plays silent audio so i2pd stays up in the "
              @"background (battery impact).";
+    case 5:
+      return @"Opens the i2pd web console (127.0.0.1:7070) through the "
+             @"backloop HTTPS server, so it is reachable in this browser or "
+             @"Safari at https://ios2pd.backloop.dev:<port>/ with a trusted "
+             @"certificate. Start the router first.";
     default: return nil;
   }
 }
@@ -1744,6 +2015,10 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
     sw.on = SettingBool(kKeepAlive, NO);
     [sw addTarget:self action:@selector(keepAliveChanged:) forControlEvents:UIControlEventValueChanged];
     cell.accessoryView = sw;
+  } else if (ip.section == 5) {
+    cell.textLabel.text = @"Open web console";
+    cell.textLabel.textColor = [UIColor systemBlueColor];
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   }
   return cell;
 }
@@ -1753,6 +2028,8 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
     [self updateSslServers];
   } else if (ip.section == 3) {
     [self installProfile];
+  } else if (ip.section == 5) {
+    [self openWebConsole];
   }
   [tableView deselectRowAtIndexPath:ip animated:YES];
 }
@@ -1856,6 +2133,39 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
     });
   } else {
     [self doInstall];
+  }
+}
+
+- (void)openWebConsole {
+  if (self.busy) return;
+  int port = SettingInt(kBackloopPort, 8443);
+  NSString* host = SettingString(kBackloopHost, @"ios2pd.backloop.dev");
+  void (^open)(void) = ^{
+    SslServerStart(port);
+    I2pBrowserViewController* bvc =
+        [[I2pBrowserViewController alloc] initWithDirect:YES];
+    bvc.navigationItem.title = @"Web console";
+    bvc.initialURL =
+        [NSString stringWithFormat:@"https://%@:%d/", host, port];
+    [self.navigationController pushViewController:bvc animated:YES];
+  };
+  if (SslHasCert()) {
+    open();
+  } else {
+    [self updateBusy:YES];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      NSError* e = nil;
+      BOOL ok = SslRefresh(&e);
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateBusy:NO];
+        if (!ok) {
+          [self alert:[NSString stringWithFormat:@"SSL setup failed: %@",
+                                                  e.localizedDescription ?: @"unknown error"]];
+          return;
+        }
+        open();
+      });
+    });
   }
 }
 
@@ -1990,6 +2300,8 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
 
 @interface I2pBrowserViewController : UIViewController <WKNavigationDelegate,
                                                        UITextFieldDelegate>
+@property (nonatomic, copy) NSString* initialURL;
+- (instancetype)initWithDirect:(BOOL)direct;
 @end
 
 @implementation I2pBrowserViewController {
@@ -1998,6 +2310,13 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
   UIToolbar* _bar;
   UIActivityIndicatorView* _spinner;
   I2pSchemeHandler* _handler;
+  BOOL _direct;
+}
+
+- (instancetype)initWithDirect:(BOOL)direct {
+  self = [super init];
+  if (self) _direct = direct;
+  return self;
 }
 
 - (void)viewDidLoad {
@@ -2086,6 +2405,11 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
     [_bar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
     [_bar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
   ]];
+
+  if (_direct && _initialURL.length) {
+    _address.text = _initialURL;
+    [self go:nil];
+  }
 }
 
 - (NSString*)displayURLForURL:(NSURL*)u {
@@ -2100,13 +2424,22 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
   NSString* raw = [_address.text stringByTrimmingCharactersInSet:
       [NSCharacterSet whitespaceCharacterSet]];
   if (!raw.length) return;
-  if (!gStarted.load()) {
+  if (!_direct && !gStarted.load()) {
     [self alert:@"Start the router (Router tab) before browsing."];
     return;
   }
   NSURL* u = [NSURL URLWithString:raw];
   if (!u.scheme.length) u = [NSURL URLWithString:[@"http://" stringByAppendingString:raw]];
   NSString* scheme = u.scheme.lowercaseString;
+  if (_direct) {
+    if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) {
+      [_web loadRequest:[NSURLRequest requestWithURL:u]];
+    } else {
+      [self alert:@"Enter an http(s) URL such as https://ios2pd.backloop.dev:8443/"];
+    }
+    [_address resignFirstResponder];
+    return;
+  }
   if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) {
     NSURLComponents* c =
         [NSURLComponents componentsWithURL:u resolvingAgainstBaseURL:NO];
@@ -2135,6 +2468,14 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
   NSURL* u = action.request.URL;
   if (!u) { handler(WKNavigationActionPolicyAllow); return; }
   NSString* scheme = u.scheme;
+  if (_direct) {
+    if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) {
+      handler(WKNavigationActionPolicyAllow);
+    } else {
+      handler(WKNavigationActionPolicyCancel);
+    }
+    return;
+  }
   if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) {
     if (action.targetFrame && action.targetFrame.mainFrame) {
       NSURLComponents* c =
