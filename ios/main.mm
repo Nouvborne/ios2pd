@@ -103,7 +103,8 @@ std::string TakeLog() {
 // traffic through the local i2pd SOCKS proxy. Requires the
 // com.apple.developer.networking.networkextension entitlement at signing time.
 void InstallVpnProfile() {
-  NEAppProxyProviderManager* mgr = [NEAppProxyProviderManager sharedManager];
+  NEAppProxyProviderManager* mgr =
+      (NEAppProxyProviderManager*)[NEAppProxyProviderManager sharedManager];
   [mgr loadFromPreferencesWithCompletionHandler:^(NSError* _Nullable err) {
     NETunnelProviderProtocol* proto = [[NETunnelProviderProtocol alloc] init];
     proto.providerBundleIdentifier = @"org.nouvborne.ios2pd.appproxy";
@@ -134,7 +135,7 @@ NSString* VpnStatusString() {
       return @"Connecting";
     case NEVPNStatusConnected:
       return @"Connected";
-    case NEVPNStatusReconnecting:
+    case NEVPNStatusReasserting:
       return @"Reconnecting";
     case NEVPNStatusDisconnecting:
       return @"Disconnecting";
