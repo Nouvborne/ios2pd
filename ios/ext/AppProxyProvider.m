@@ -10,6 +10,7 @@
 #import <Network/Network.h>
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define FAKE_NET_BASE 0x0AC00000u  // 10.192.0.0
@@ -437,8 +438,8 @@ static int openSocket(NSString* host,
 
 - (void)startProxyWithOptions:(NSDictionary<NSString*, id>*)options
             completionHandler:(void (^)(NSError* _Nullable))completionHandler {
-  NEAppProxyProviderProtocol* appProto =
-      (NEAppProxyProviderProtocol*)self.protocolConfiguration;
+  NETunnelProviderProtocol* appProto =
+      (NETunnelProviderProtocol*)self.protocolConfiguration;
   NSDictionary* conf = appProto.providerConfiguration;
   _proxyHost = conf[@"proxyHost"] ?: @"127.0.0.1";
   _proxyPort = (uint16_t)([conf[@"proxyPort"] intValue] ?: 4447);
@@ -476,14 +477,21 @@ static int openSocket(NSString* host,
   NWEndpoint* ep = tcp.remoteEndpoint;
   NSString* host = nil;
   uint16_t port = 0;
-  if ([ep isKindOfClass:[NWHostEndpoint class]]) {
-    NWHostEndpoint* he = (NWHostEndpoint*)ep;
-    host = he.hostname;
-    port = (uint16_t)[he.port intValue];
-  } else if ([ep isKindOfClass:[NWAddressEndpoint class]]) {
-    NWAddressEndpoint* ae = (NWAddressEndpoint*)ep;
-    host = ae.address;
-    port = ae.port;
+  nw_endpoint_t nep = (__bridge nw_endpoint_t)ep;
+  if (nep) {
+    nw_endpoint_type_t et = nw_endpoint_get_type(nep);
+    if (et == nw_endpoint_type_host) {
+      const char* h = nw_endpoint_get_hostname(nep);
+      if (h) host = [NSString stringWithUTF8String:h];
+      port = nw_endpoint_get_port(nep);
+    } else if (et == nw_endpoint_type_address) {
+      char* a = nw_endpoint_copy_address_string(nep);
+      if (a) {
+        host = [NSString stringWithUTF8String:a];
+        free(a);
+      }
+      port = nw_endpoint_get_port(nep);
+    }
   }
   if (!host || port == 0) return NO;
 
@@ -510,8 +518,10 @@ static int openSocket(NSString* host,
   __weak typeof(self) weakSelf = self;
   __weak Relay* wr = r;
   r.onDone = ^{
-    dispatch_async(weakSelf->_relaysQ, ^{
-      [weakSelf->_relays removeObject:wr];
+    AppProxyProvider* s = weakSelf;
+    if (!s) return;
+    dispatch_async(s->_relaysQ, ^{
+      [s->_relays removeObject:wr];
     });
   };
   dispatch_async(_relaysQ, ^{
@@ -533,7 +543,9 @@ static int openSocket(NSString* host,
 
 - (void)pumpUdp:(NEAppProxyUDPFlow*)flow {
   __weak typeof(self) weakSelf = self;
-  [flow readDatagramsWithCompletionHandler:^(NSArray<NSData*>* datagrams, NSError* error) {
+  [flow readDatagramsWithCompletionHandler:^(NSArray<NSData*>* datagrams,
+                                            NSArray<NWEndpoint*>* remoteEndpoints,
+                                            NSError* error) {
     AppProxyProvider* s = weakSelf;
     if (!s) return;
     if (error) {
@@ -547,12 +559,19 @@ static int openSocket(NSString* host,
       return;
     }
     NSMutableArray* replies = [NSMutableArray new];
-    for (NSData* dg in datagrams) {
-      NSData* resp = buildDnsResponse(dg);
-      if (resp) [replies addObject:resp];
+    NSMutableArray* replyEnds = [NSMutableArray new];
+    for (NSUInteger i = 0; i < datagrams.count; i++) {
+      NSData* resp = buildDnsResponse(datagrams[i]);
+      if (resp) {
+        [replies addObject:resp];
+        if (i < remoteEndpoints.count) {
+          [replyEnds addObject:remoteEndpoints[i]];
+        }
+      }
     }
-    if (replies.count) {
+    if (replies.count && replies.count == replyEnds.count) {
       [flow writeDatagrams:replies
+            sentByEndpoints:replyEnds
          completionHandler:^(NSError* e) {
            if (e) {
              [flow closeReadWithError:nil];
