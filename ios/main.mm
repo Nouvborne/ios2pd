@@ -834,6 +834,7 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
 @interface TunnelEditorViewController : UITableViewController <UITextFieldDelegate>
 @property (nonatomic, strong) NSMutableDictionary* tunnel;
 @property (nonatomic, assign) NSInteger editIndex;  // -1 when adding
+- (instancetype)initWithTunnel:(NSMutableDictionary*)tunnel;
 @end
 
 @interface TunnelsViewController : UITableViewController
@@ -1126,7 +1127,7 @@ static void PinEdges(UIView* sub, UIView* sup, CGFloat top, CGFloat left,
   f.autocorrectionType = UITextAutocorrectionTypeNo;
   f.autocapitalizationType = UITextAutocapitalizationTypeNone;
   NSString* val = _tunnel[key];
-  if ([val isKindOfClass:[NSNumber class]]) val = [val stringValue];
+  if ([val isKindOfClass:[NSNumber class]]) val = [(NSNumber*)val stringValue];
   f.text = val;
   f.textAlignment = NSTextAlignmentRight;
   BOOL numeric = [key isEqualToString:@"port"] || [key isEqualToString:@"destinationport"] ||
