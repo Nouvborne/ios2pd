@@ -8,4 +8,7 @@
 //     (127.0.0.1:4447), which resolves and tunnels to the I2P destination,
 //   * forwards everything else directly (clearnet still works).
 @interface AppProxyProvider : NEAppProxyProvider
+- (BOOL)handleNewFlow:(NEAppProxyFlow*)flow;
+- (BOOL)handleNewUDPFlow:(NEAppProxyUDPFlow*)flow
+    initialRemoteEndpoint:(NWEndpoint*)remoteEndpoint;
 @end

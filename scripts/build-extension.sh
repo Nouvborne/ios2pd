@@ -29,6 +29,7 @@ echo "==> Compiling AppProxyProvider"
 echo "==> Linking ios2pdProxy.appex"
 "$CC" "${EXT_CFLAGS[@]}" -bundle \
   -framework NetworkExtension \
+  -framework Network \
   -framework Foundation \
   -framework Security \
   -o "$EXT_DIR/AppProxyProvider" "$OBJ_DIR/AppProxyProvider.o"

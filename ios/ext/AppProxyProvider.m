@@ -3,8 +3,11 @@
 #import <arpa/inet.h>
 #import <netdb.h>
 #import <netinet/in.h>
+#import <pthread.h>
 #import <sys/socket.h>
 #import <sys/types.h>
+
+#import <Network/Network.h>
 
 #include <stdint.h>
 #include <string.h>
@@ -363,13 +366,13 @@ static int openSocket(NSString* host,
         if (_done) return;
         __weak Relay* weakSelf = self;
         [_flow writeData:d
-           completionHandler:^(NSError* e) {
+           withCompletionHandler:^(NSError* e) {
              if (e) [weakSelf finish];
            }];
       });
     } else if (n == 0) {
       dispatch_async(_q, ^{
-        if (!_done) [_flow closeWriteWithCompletionHandler:nil];
+        if (!_done) [_flow closeWriteWithError:nil];
       });
       break;
     } else if (errno != EINTR) {
@@ -413,8 +416,8 @@ static int openSocket(NSString* host,
     close(_fd);
     _fd = -1;
   }
-  [_flow closeReadWithCompletionHandler:nil];
-  [_flow closeWriteWithCompletionHandler:nil];
+  [_flow closeReadWithError:nil];
+  [_flow closeWriteWithError:nil];
   if (_onDone) _onDone();
 }
 
@@ -434,7 +437,9 @@ static int openSocket(NSString* host,
 
 - (void)startProxyWithOptions:(NSDictionary<NSString*, id>*)options
             completionHandler:(void (^)(NSError* _Nullable))completionHandler {
-  NSDictionary* conf = self.protocolConfiguration.providerConfiguration;
+  NEAppProxyProviderProtocol* appProto =
+      (NEAppProxyProviderProtocol*)self.protocolConfiguration;
+  NSDictionary* conf = appProto.providerConfiguration;
   _proxyHost = conf[@"proxyHost"] ?: @"127.0.0.1";
   _proxyPort = (uint16_t)([conf[@"proxyPort"] intValue] ?: 4447);
   _relays = [NSMutableSet new];
@@ -466,24 +471,21 @@ static int openSocket(NSString* host,
   completionHandler();
 }
 
-- (void)handleNewFlow:(NEAppProxyTCPFlow*)flow {
-  NWEndpoint* ep = flow.remoteEndpoint;
+- (BOOL)handleNewFlow:(NEAppProxyFlow*)flow {
+  NEAppProxyTCPFlow* tcp = (NEAppProxyTCPFlow*)flow;
+  NWEndpoint* ep = tcp.remoteEndpoint;
   NSString* host = nil;
-  if ([ep isKindOfClass:[NWHostEndpoint class]]) {
-    host = ((NWHostEndpoint*)ep).hostname;
-  } else if ([ep isKindOfClass:[NWAddressEndpoint class]]) {
-    host = ((NWAddressEndpoint*)ep).address;
-  }
-  if (!host) host = ep.hostname;
-  if (!host) host = ep.address;
   uint16_t port = 0;
-  if (ep.port) port = ep.port.port;
-
-  if (!host || port == 0) {
-    [flow closeReadWithCompletionHandler:nil];
-    [flow closeWriteWithCompletionHandler:nil];
-    return;
+  if ([ep isKindOfClass:[NWHostEndpoint class]]) {
+    NWHostEndpoint* he = (NWHostEndpoint*)ep;
+    host = he.hostname;
+    port = (uint16_t)[he.port intValue];
+  } else if ([ep isKindOfClass:[NWAddressEndpoint class]]) {
+    NWAddressEndpoint* ae = (NWAddressEndpoint*)ep;
+    host = ae.address;
+    port = ae.port;
   }
+  if (!host || port == 0) return NO;
 
   uint32_t ip = ipv4ToUint(host);
   BOOL fake = (ip >= FAKE_NET_BASE && ip < FAKE_NET_BASE + FAKE_NET_COUNT);
@@ -493,15 +495,13 @@ static int openSocket(NSString* host,
     NSString* name = nameForIp(ip);
     if (!name) {
       NSLog(@"[ios2pd] no reverse map for fake ip %@", host);
-      [flow closeReadWithCompletionHandler:nil];
-      [flow closeWriteWithCompletionHandler:nil];
-      return;
+      return NO;
     }
     target = name;
     direct = NO;
   }
 
-  Relay* r = [[Relay alloc] initWithFlow:flow
+  Relay* r = [[Relay alloc] initWithFlow:tcp
                                     host:target
                                     port:port
                                socksHost:_proxyHost
@@ -518,19 +518,17 @@ static int openSocket(NSString* host,
     [self->_relays addObject:r];
     [r start];
   });
+  return YES;
 }
 
-- (void)handleNewUDPFlow:(NEAppProxyUDPFlow*)flow
-  initialRemoteEndpoint:(NWEndpoint*)remoteEndpoint {
+- (BOOL)handleNewUDPFlow:(NEAppProxyUDPFlow*)flow
+   initialRemoteEndpoint:(NWEndpoint*)remoteEndpoint {
   // We only answer *.i2p DNS queries; everything else is dropped so the
   // clearnet UDP path is untouched.
-  if (_handlingUdp) {
-    [flow closeReadWithCompletionHandler:nil];
-    [flow closeWriteWithCompletionHandler:nil];
-    return;
-  }
+  if (_handlingUdp) return NO;
   _handlingUdp = YES;
   [self pumpUdp:flow];
+  return YES;
 }
 
 - (void)pumpUdp:(NEAppProxyUDPFlow*)flow {
@@ -539,13 +537,13 @@ static int openSocket(NSString* host,
     AppProxyProvider* s = weakSelf;
     if (!s) return;
     if (error) {
-      [flow closeReadWithCompletionHandler:nil];
-      [flow closeWriteWithCompletionHandler:nil];
+      [flow closeReadWithError:nil];
+      [flow closeWriteWithError:nil];
       return;
     }
     if (!datagrams.count) {
-      [flow closeReadWithCompletionHandler:nil];
-      [flow closeWriteWithCompletionHandler:nil];
+      [flow closeReadWithError:nil];
+      [flow closeWriteWithError:nil];
       return;
     }
     NSMutableArray* replies = [NSMutableArray new];
@@ -557,8 +555,8 @@ static int openSocket(NSString* host,
       [flow writeDatagrams:replies
          completionHandler:^(NSError* e) {
            if (e) {
-             [flow closeReadWithCompletionHandler:nil];
-             [flow closeWriteWithCompletionHandler:nil];
+             [flow closeReadWithError:nil];
+             [flow closeWriteWithError:nil];
            } else {
              [s pumpUdp:flow];
            }
