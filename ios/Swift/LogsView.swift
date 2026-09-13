@@ -65,12 +65,16 @@ struct LogsView: View {
     }
 
     private var empty: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "text.alignleft")
+        let noContainer = !VpnController.sharedContainerAvailable
+        return VStack(spacing: 12) {
+            Image(systemName: noContainer ? "exclamationmark.triangle" : "text.alignleft")
                 .font(.system(size: 34, weight: .light))
-                .foregroundStyle(.secondary)
-            Text("No output yet").font(.headline)
-            Text("Connect on the Home tab to start the router.")
+                .foregroundStyle(noContainer ? Theme.caution : .secondary)
+            Text(noContainer ? "Shared container unavailable" : "No output yet")
+                .font(.headline)
+            Text(noContainer
+                 ? "The app group entitlement didn't survive signing, so the log the tunnel writes can't be read. The VPN itself may still work."
+                 : "Connect on the Home tab to start the router.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

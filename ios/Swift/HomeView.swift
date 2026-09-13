@@ -30,7 +30,7 @@ struct HomeView: View {
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
             vpn.refreshStats()
         }
-        .alert("Could not start the tunnel", isPresented: errorPresented) {
+        .alert("Tunnel error", isPresented: errorPresented) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(vpn.errorMessage ?? "")

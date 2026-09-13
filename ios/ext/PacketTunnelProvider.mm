@@ -41,7 +41,12 @@ static const unsigned long long kMaxLogBytes = 1024 * 1024;
 static NSString* SharedDir(void) {
   NSURL* url = [[NSFileManager defaultManager]
       containerURLForSecurityApplicationGroupIdentifier:kAppGroup];
-  return url ? url.path : NSHomeDirectory();
+  if (!url) {
+    NSLog(@"[ios2pd] app group %@ unavailable; logging to the extension's own "
+          @"container, the app will not see it", kAppGroup);
+    return NSHomeDirectory();
+  }
+  return url.path;
 }
 
 static NSString* DataDir(void) {
@@ -163,8 +168,19 @@ bool StartDaemon() {
   argv.reserve(args.size());
   for (auto& arg : args) argv.push_back(&arg[0]);
 
-  if (!Daemon.init(static_cast<int>(argv.size()), argv.data())) return false;
-  if (!Daemon.start()) return false;
+  // These land in the device console. They are the only trace left if i2pd
+  // exits before it opens its own logfile, or if the app group is missing.
+  NSLog(@"[ios2pd] datadir=%s certsdir=%s", datadir.c_str(), certs.UTF8String);
+  if (!Daemon.init(static_cast<int>(argv.size()), argv.data())) {
+    NSLog(@"[ios2pd] Daemon.init failed");
+    return false;
+  }
+  NSLog(@"[ios2pd] Daemon.init ok");
+  if (!Daemon.start()) {
+    NSLog(@"[ios2pd] Daemon.start failed");
+    return false;
+  }
+  NSLog(@"[ios2pd] Daemon.start ok");
 
   gRunning.store(true);
   gDaemonThread = std::thread([] { Daemon.run(); });
@@ -241,6 +257,8 @@ void StopDaemon() {
 
     [self setTunnelNetworkSettings:settings
                  completionHandler:^(NSError* _Nullable error) {
+                   NSLog(@"[ios2pd] setTunnelNetworkSettings: %@",
+                         error ?: @"ok");
                    completionHandler(error);
                  }];
   });

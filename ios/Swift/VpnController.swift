@@ -75,8 +75,28 @@ final class VpnController: ObservableObject {
     }
 
     private func syncStatus() {
+        let previous = status
         status = manager?.connection.status ?? .invalid
+        let wasLive = previous == .connecting || previous == .reasserting || previous == .connected
+        if status == .disconnected && wasLive { captureDisconnectError() }
     }
+
+    /// Why the tunnel stopped. Without this a failing extension just drops back
+    /// to Disconnected with nothing shown — the error never reaches the app
+    /// through the start path.
+    private func captureDisconnectError() {
+        guard let connection = manager?.connection, connection.status != .invalid else { return }
+        connection.fetchLastDisconnectError { [weak self] error in
+            guard let error else { return }
+            DispatchQueue.main.async {
+                self?.errorMessage = "Tunnel stopped: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// False when the app group entitlement did not survive signing, which
+    /// makes the log and stats files unreadable even though the VPN may run.
+    static var sharedContainerAvailable: Bool { sharedURL != nil }
 
     private func fail(_ error: Error) {
         DispatchQueue.main.async { self.errorMessage = error.localizedDescription }
