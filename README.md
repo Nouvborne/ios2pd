@@ -1,114 +1,103 @@
 # ios2pd
 
 [i2pd](https://github.com/PurpleI2P/i2pd) — the I2P anonymous-network daemon
-written in C++ — ported to iOS, built as an **unsigned `.ipa`** by a GitHub
-Actions workflow (macOS runners, no Mac or Apple Developer account needed).
+written in C++ — ported to iOS as a VPN app, built as an **unsigned `.ipa`** by
+a GitHub Actions workflow (macOS runners, no Mac needed).
 
 ## What this is
 
 * A real cross-compile of **i2pd 2.61.0** for `arm64` iOS (device):
-  * `libi2pd.a`, `libi2pdclient.a`, `libi2pdlang.a`
-  * plus OpenSSL, zlib and Boost statically linked for iOS.
-* A SwiftUI app (`ios/Swift/`) that embeds the i2pd daemon core (`DaemonUnix`)
-  behind an ObjC bridge (`ios/I2pdCore.mm`) and runs the router on a
-  background thread, with tabs: **Router**
-  (Start/Stop, live log), **Browser** (in-app `.i2p` browser through the local
-  HTTP proxy), **Tunnels** (custom tunnels editor), **i2pd** (enable + port for
-  the HTTP proxy :4444, SOCKS :4447 and SAM :7656, log level) and **Proxy**
-  (backloop.dev SSL + one-tap `.mobileconfig` install, optional silent-audio
-  background keep-alive). The UI uses Liquid Glass (`glassEffect`) on iOS 26+
-  with a material fallback on older iOS; minimum iOS is 15.0.
-* A CI pipeline that produces an **unsigned IPA** — a `Payload/ios2pd.app`
-  bundle with a valid ad-hoc signature (for sideloader compatibility) —
-  downloadable as a workflow artifact.
+  `libi2pd.a`, `libi2pdclient.a`, `libi2pdlang.a`, plus OpenSSL, zlib and Boost
+  statically linked for iOS.
+* A SwiftUI app with two tabs:
+  * **Home** — connect/disconnect, router status, uptime, tunnel counts.
+  * **Logs** — live tail of the i2pd log.
+* A **NEPacketTunnelProvider** extension (`ios/ext/`) that runs the i2pd router
+  and exposes it to the whole system.
+
+## How the VPN works
+
+The router runs **inside the tunnel extension**, not inside the app. That is
+the whole point: iOS suspends backgrounded apps, but it keeps a running VPN
+extension alive, so the daemon stays up when you leave ios2pd.
+
+The tunnel carries no packets. `includedRoutes` is empty, so nothing is routed
+into the extension. What the tunnel actually does is publish
+`NEProxySettings` for the device: HTTP/HTTPS traffic to hosts matching `i2p`
+goes to the router's own HTTP proxy on `127.0.0.1:4444`, and everything else
+takes its normal path. `.i2p` hostnames never need to resolve in DNS — the
+proxy resolves them inside I2P.
+
+So `*.i2p` works in Safari and any other app while connected, clearnet traffic
+is untouched, and there is no userspace TCP/IP stack to maintain.
+
+Consequences worth knowing:
+
+* **Only HTTP/HTTPS is tunneled.** Non-HTTP I2P protocols (IRC, torrents) are
+  not reachable; the SOCKS proxy, SAM bridge, I2CP and the web console are all
+  disabled.
+* **The extension has a much smaller memory budget than an app.** The generated
+  config keeps the router lean — `notransit = true`, no transit tunnels,
+  `bandwidth = L`, no ElGamal precomputation — so it does not relay for others.
+
+The app and the extension share a container
+(`group.uk.nouvborne.ios2pd`); the extension writes `i2pd.log` and
+`status.plist` there, and the app reads them.
 
 ## Build
 
-Everything runs in CI on `macos-26` runners. To run it locally you need a Mac
-with Xcode + command line tools:
+Everything runs in CI on `macos-26` runners. Locally you need a Mac with Xcode
+and command line tools:
 
 ```sh
-./scripts/build-deps.sh        # OpenSSL 3.0.16, zlib 1.3.1, Boost 1.85.0 (arm64 iOS)
-./scripts/build-i2pd.sh        # cmake + leetal/ios-cmake -> i2pd static libs
-./scripts/build-app.sh         # daemon core + I2pdCore.mm + SwiftUI shell -> ios2pd.app
-./scripts/make-ipa.sh          # assemble bundle + package ios2pd-unsigned.ipa
+./scripts/build-deps.sh       # OpenSSL 3.0.16, zlib 1.3.1, Boost 1.85.0 (arm64 iOS)
+./scripts/build-i2pd.sh       # cmake + leetal/ios-cmake -> i2pd static libs
+./scripts/build-app.sh        # SwiftUI app (pure Swift) -> ios2pd.app
+./scripts/build-extension.sh  # i2pd + daemon core + provider -> ios2pdTunnel.appex
+./scripts/make-ipa.sh         # assemble bundle + package ios2pd-unsigned.ipa
 ```
 
 Artifacts land in `build/`. The workflow caches `build/deps-ios` between runs.
 
-## Getting the IPA
+## Installing
 
 1. Open the repo on GitHub → **Actions** → **Build unsigned iOS IPA**.
 2. Run the workflow (or wait for the push trigger).
 3. Download the `ios2pd-unsigned-ipa` artifact.
 
-Because the app is unsigned, iOS will refuse to install it as-is. To put it on
-a device, re-sign it with a free Apple ID:
+The IPA is unsigned, so it has to be re-signed before it will install
+(Sideloadly, AltStore, or `codesign` with your own profile).
 
-* **Sideloadly** or **AltStore** (macOS/Windows/Linux) — point it at the IPA
-  and your Apple ID.
-* or `codesign --force --deep --sign -` after embedding your provisioning
-  profile (see Apple's docs on free personal-team signing).
-
-## Using the I2P VPN (not in the default IPA)
-
-The **NEAppProxyProvider** extension (`ios/ext/`) is no longer shipped in the
-default IPA. It requires a **paid** Apple Developer account whose provisioning
-profile includes the **Network Extensions** capability
-(`com.apple.developer.networking.networkextension`); free personal-team
-signing does not grant this entitlement. The default IPA has no appex and no
-restricted entitlements, so it sideloads on any free Apple ID.
-
-If you have a paid account and want the VPN extension, add it back by editing
-`scripts/build-app.sh` to call `./scripts/build-extension.sh`, re-adding
-`com.apple.developer.networking.networkextension` to `ios/entitlements.plist`,
-and signing the IPA with your paid certificate (in Sideloadly, make sure
-nested extensions are signed and the Network Extensions entitlement is
-applied).
-
-## Using the backloop.dev Wi-Fi proxy (no paid account needed)
-
-If you don't have a paid Apple Developer account, the VPN toggle won't appear
-(see above). Instead, the **Proxy** tab installs a Wi-Fi profile that routes
-all HTTP/HTTPS traffic through the local i2pd HTTP proxy via
-[backloop.dev](https://backloop.dev) — a wildcard domain that resolves to
-`127.0.0.1` with a publicly trusted (publicly known) loopback certificate.
-
-1. Sign and install the IPA with any free Apple ID (Sideloadly/AltStore).
-2. Launch ios2pd, open the **Router** tab and tap **Start**; wait for the log
-   to show tunnels are built.
-3. Open the **Proxy** tab → **Update SSL servers** (fetches the current
-   backloop.dev certificate) → **Install proxy profile (.mobileconfig)** and
-   approve the profile in Settings.
-4. Optionally enable **Keep i2pd alive in background** (plays silent audio so
-   iOS doesn't suspend the app; uses battery).
-5. Browse `*.i2p` sites in Safari over **Wi-Fi** (manual HTTP proxy
-   `ios2pd.backloop.dev:4444` → device loopback). This works on any free
-   Apple ID. Note: `*.i2p` hostnames only resolve through the i2pd HTTP proxy,
-   so this routes all browser traffic over I2P while enabled.
+> **A paid Apple Developer account is required.** The app and its extension need
+> `com.apple.developer.networking.networkextension` (`packet-tunnel-provider`),
+> which free personal-team signing does not grant. With a free Apple ID the app
+> installs but connecting fails.
+>
+> When re-signing, make sure the nested `.appex` is signed too, that the Network
+> Extensions capability is applied to both, and that the app group
+> (`group.uk.nouvborne.ios2pd`) is kept in sync across both bundles — if the
+> sideloader rewrites bundle ids, the shared container is lost and the Logs tab
+> stays empty (the VPN itself still works).
 
 ## Caveats
 
-* **Background execution:** iOS suspends apps that are not foregrounded, so
-  the router stops once the OS suspends the app. The **Proxy → Keep i2pd alive
-  in background** switch (silent audio) mitigates this for the Wi-Fi proxy
-  workflow, at some battery cost.
 * **Runtime on device is experimental.** The build is verified to compile and
-  package; networking behaviour (interface enumeration, tunnels, reseeding) on
-  a real device depends on entitlements and iOS network policies.
-* `getifaddrs`/interface access on iOS is restricted; the router may see only
-  loopback until network entitlements are granted when signing.
+  package; reseeding, tunnel building and proxy behaviour on a real device
+  depend on entitlements and iOS network policies.
+* A cold start needs a reseed and a minute or two of tunnel building before
+  `.i2p` addresses resolve.
+* If iOS kills the extension for memory, the VPN drops. The Logs tab keeps the
+  last session's output, since the log lives in the shared container.
 
 ## Layout
 
 ```
-.github/workflows/build-ipa.yml  CI pipeline (deps → libs → app → IPA)
+.github/workflows/build-ipa.yml  CI pipeline (deps → libs → app → appex → IPA)
 scripts/                         build scripts (macOS/Xcode)
-ios/I2pdCore.h, ios/I2pdCore.mm  ObjC bridge: daemon control, config, SSL server
 ios/Swift/                       SwiftUI app (Liquid Glass on iOS 26+)
 ios/Info.plist                   app bundle metadata
-ios/entitlements.plist           empty (no restricted entitlements; free-account friendly)
-ios/ext/                         NEAppProxyProvider (optional; not shipped in the default IPA)
+ios/entitlements.plist           network extension + app group
+ios/ext/                         NEPacketTunnelProvider — runs the i2pd router
 i2pd/                            i2pd source (submodule, pinned to 2.61.0)
 ```
 

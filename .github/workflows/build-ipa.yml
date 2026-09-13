@@ -44,12 +44,16 @@ jobs:
       - name: Build iOS app
         run: ./scripts/build-app.sh
 
+      - name: Build VPN tunnel extension
+        run: ./scripts/build-extension.sh
+
       - name: Package unsigned IPA
         run: ./scripts/make-ipa.sh
 
       - name: Inspect artifacts
         run: |
           file build/ios2pd.app/ios2pd
+          file build/ios2pd.app/PlugIns/ios2pdTunnel.appex/ios2pdTunnel
           ls -lh build/dist
 
       - name: Upload unsigned IPA

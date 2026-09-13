@@ -4,6 +4,7 @@ set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
 APP_DIR="$BUILD_DIR/ios2pd.app"
+EXT_DIR="$APP_DIR/PlugIns/ios2pdTunnel.appex"
 DIST_DIR="$BUILD_DIR/dist"
 
 # ---------------------------------------------------------------- Info.plist
@@ -25,9 +26,9 @@ file "$APP_DIR/ios2pd"
 echo "==> Info.plist:"
 plutil -p "$APP_DIR/Info.plist"
 
-# Ship the (empty) entitlements alongside the bundle so Sideloadly/AltStore
-# sign it with default entitlements on any free Apple ID. No appex and no
-# restricted entitlements -> free-account signing trivially succeeds.
+# Ship the entitlements alongside the bundle so sideloaders can pick them up.
+# The VPN needs com.apple.developer.networking.networkextension, which only a
+# paid Apple Developer account can grant -- see the README.
 cp "$ROOT/ios/entitlements.plist" "$APP_DIR/entitlements.plist"
 
 # ---------------------------------------------------------------- codesign
@@ -35,10 +36,14 @@ cp "$ROOT/ios/entitlements.plist" "$APP_DIR/entitlements.plist"
 # installd and strict sideloaders (ESign/Feather) reject a bundle whose
 # signature is malformed or whose sealed hashes don't match, so a broken
 # signature must fail the build rather than ship (set -e aborts below).
-rm -rf "$APP_DIR/_CodeSignature"
+rm -rf "$APP_DIR/_CodeSignature" "$EXT_DIR/_CodeSignature"
 if command -v codesign >/dev/null 2>&1; then
   echo "==> Ad-hoc codesigning bundle..."
-  codesign --force --sign - "$APP_DIR"
+  # Nested code first: signing the app seals whatever is already in PlugIns/.
+  if [ -d "$EXT_DIR" ]; then
+    codesign --force --sign - --entitlements "$ROOT/ios/ext/entitlements.plist" "$EXT_DIR"
+  fi
+  codesign --force --sign - --entitlements "$ROOT/ios/entitlements.plist" "$APP_DIR"
   codesign -dv "$APP_DIR" 2>&1 || true
   echo "==> Verifying signature (strict, deep)..."
   codesign --verify --deep --strict --verbose=2 "$APP_DIR"

@@ -1,17 +1,15 @@
-//  Ios2pdApp.swift — SwiftUI entry point for ios2pd.
-//  Five tabs: Router, Browser, Tunnels, i2pd, Proxy.
+//  Ios2pdApp.swift — SwiftUI entry point. Two tabs: Home and Logs.
 
 import SwiftUI
-import UIKit
 
 @main
 struct Ios2pdApp: App {
-    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var vpn = VpnController()
 
     var body: some Scene {
         WindowGroup {
             RootTabView()
-                .preferredColorScheme(.dark)
+                .environmentObject(vpn)
         }
     }
 }
@@ -19,40 +17,10 @@ struct Ios2pdApp: App {
 struct RootTabView: View {
     var body: some View {
         TabView {
-            RouterView()
-                .tabItem { Label("Router", systemImage: "network") }
-            BrowserView()
-                .tabItem { Label("Browser", systemImage: "safari") }
-            TunnelsView()
-                .tabItem { Label("Tunnels", systemImage: "arrow.up.arrow.down") }
-            I2pdSettingsView()
-                .tabItem { Label("i2pd", systemImage: "switch.2") }
-            ProxyView()
-                .tabItem { Label("Proxy", systemImage: "globe") }
+            HomeView()
+                .tabItem { Label("Home", systemImage: "shield.lefthalf.filled") }
+            LogsView()
+                .tabItem { Label("Logs", systemImage: "text.alignleft") }
         }
-    }
-}
-
-final class AppDelegate: NSObject, UIApplicationDelegate {
-    func application(
-        _ application: UIApplication,
-        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
-    ) -> Bool {
-        I2pdCore.prepare()
-        I2pdCore.applyKeepAlive()
-        return true
-    }
-
-    func applicationWillTerminate(_ application: UIApplication) {
-        I2pdCore.stopRouter()
-        I2pdCore.stopSslServer()
-    }
-
-    func applicationDidEnterBackground(_ application: UIApplication) {
-        I2pdCore.applyKeepAlive()
-    }
-
-    func applicationDidBecomeActive(_ application: UIApplication) {
-        I2pdCore.applyKeepAlive()
     }
 }

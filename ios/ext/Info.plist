@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>ios2pd Proxy</string>
+	<string>ios2pd Tunnel</string>
 	<key>CFBundleExecutable</key>
-	<string>AppProxyProvider</string>
+	<string>ios2pdTunnel</string>
 	<key>CFBundleIdentifier</key>
-	<string>org.nouvborne.ios2pd.appproxy</string>
+	<string>uk.nouvborne.ios2pd.tunnel</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>AppProxyProvider</string>
+	<string>ios2pdTunnel</string>
 	<key>CFBundlePackageType</key>
 	<string>XPC!</string>
 	<key>CFBundleShortVersionString</key>
@@ -23,7 +23,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>MinimumOSVersion</key>
-	<string>13.0</string>
+	<string>16.0</string>
 	<key>UIDeviceFamily</key>
 	<array>
 		<integer>1</integer>
@@ -32,9 +32,9 @@
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionPointIdentifier</key>
-		<string>com.apple.app-proxy-provider</string>
+		<string>com.apple.networkextension.packet-tunnel</string>
 		<key>NSExtensionPrincipalClass</key>
-		<string>AppProxyProvider</string>
+		<string>PacketTunnelProvider</string>
 	</dict>
 </dict>
 </plist>
