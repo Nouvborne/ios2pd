@@ -217,51 +217,52 @@ void StopDaemon() {
 
 - (void)startTunnelWithOptions:(NSDictionary<NSString*, NSObject*>*)options
              completionHandler:(void (^)(NSError* _Nullable))completionHandler {
-  // Reseeding can take a moment; keep it off the extension's main queue.
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-    OPENSSL_init_ssl(0, NULL);
+  NSLog(@"[ios2pd] startTunnel entered");
 
-    if (!StartDaemon()) {
-      completionHandler([NSError
-          errorWithDomain:@"ios2pd"
-                     code:1
-                 userInfo:@{
-                   NSLocalizedDescriptionKey :
-                       @"i2pd could not start. Check the Logs tab for details."
-                 }]);
-      return;
-    }
+  // Proxy-only tunnel: no routes are included, so no packets are handed to
+  // this extension. All it does is tell the system to send *.i2p through the
+  // router's HTTP proxy on loopback.
+  NEPacketTunnelNetworkSettings* settings = [[NEPacketTunnelNetworkSettings alloc]
+      initWithTunnelRemoteAddress:@"198.18.0.1"];
 
-    // Proxy-only tunnel: no routes are included, so no packets are handed to
-    // this extension. All it does is tell the system to send *.i2p through the
-    // router's HTTP proxy on loopback.
-    NEPacketTunnelNetworkSettings* settings = [[NEPacketTunnelNetworkSettings alloc]
-        initWithTunnelRemoteAddress:@"198.18.0.1"];
+  NEIPv4Settings* ipv4 =
+      [[NEIPv4Settings alloc] initWithAddresses:@[ @"198.18.0.2" ]
+                                    subnetMasks:@[ @"255.255.255.255" ]];
+  ipv4.includedRoutes = @[];
+  settings.IPv4Settings = ipv4;
 
-    NEIPv4Settings* ipv4 =
-        [[NEIPv4Settings alloc] initWithAddresses:@[ @"198.18.0.2" ]
-                                      subnetMasks:@[ @"255.255.255.255" ]];
-    ipv4.includedRoutes = @[];
-    settings.IPv4Settings = ipv4;
+  NEProxyServer* proxy = [[NEProxyServer alloc] initWithAddress:@"127.0.0.1"
+                                                           port:kHttpProxyPort];
+  NEProxySettings* proxySettings = [[NEProxySettings alloc] init];
+  proxySettings.HTTPEnabled = YES;
+  proxySettings.HTTPServer = proxy;
+  proxySettings.HTTPSEnabled = YES;
+  proxySettings.HTTPSServer = proxy;
+  proxySettings.excludeSimpleHostnames = YES;
+  proxySettings.matchDomains = @[ @"i2p" ];
+  settings.proxySettings = proxySettings;
 
-    NEProxyServer* proxy = [[NEProxyServer alloc] initWithAddress:@"127.0.0.1"
-                                                             port:kHttpProxyPort];
-    NEProxySettings* proxySettings = [[NEProxySettings alloc] init];
-    proxySettings.HTTPEnabled = YES;
-    proxySettings.HTTPServer = proxy;
-    proxySettings.HTTPSEnabled = YES;
-    proxySettings.HTTPSServer = proxy;
-    proxySettings.excludeSimpleHostnames = YES;
-    proxySettings.matchDomains = @[ @"i2p" ];
-    settings.proxySettings = proxySettings;
-
-    [self setTunnelNetworkSettings:settings
-                 completionHandler:^(NSError* _Nullable error) {
-                   NSLog(@"[ios2pd] setTunnelNetworkSettings: %@",
-                         error ?: @"ok");
-                   completionHandler(error);
-                 }];
-  });
+  // Bring the tunnel up before starting the router. Reseeding can take a while
+  // and iOS kills a tunnel whose start handler has not returned in 60s, so the
+  // daemon runs after the handshake and cancels the tunnel if it fails.
+  [self setTunnelNetworkSettings:settings
+               completionHandler:^(NSError* _Nullable error) {
+                 NSLog(@"[ios2pd] setTunnelNetworkSettings: %@", error ?: @"ok");
+                 completionHandler(error);
+                 if (error) return;
+                 dispatch_async(
+                     dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                       OPENSSL_init_ssl(0, NULL);
+                       if (StartDaemon()) return;
+                       [self cancelTunnelWithError:
+                                 [NSError errorWithDomain:@"ios2pd"
+                                                     code:1
+                                                 userInfo:@{
+                                                   NSLocalizedDescriptionKey :
+                                                       @"i2pd failed to start"
+                                                 }]];
+                     });
+               }];
 }
 
 - (void)stopTunnelWithReason:(NEProviderStopReason)reason
