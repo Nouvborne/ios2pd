@@ -28,7 +28,7 @@ struct HomeView: View {
             .navigationBarTitleDisplayMode(.large)
         }
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
-            vpn.refreshStats()
+            vpn.refresh()
         }
         .alert("Tunnel error", isPresented: errorPresented) {
             Button("OK", role: .cancel) {}

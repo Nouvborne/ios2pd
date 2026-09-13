@@ -1,9 +1,10 @@
 //  VpnController.swift — owns the ios2pd tunnel configuration: status,
-//  connect/disconnect, and the router readout the extension drops into the
-//  shared app-group container.
+//  connect/disconnect, and the log and router readout it polls from the
+//  extension.
 //
-//  The i2pd daemon itself lives in the tunnel extension, not here, so the app
-//  never talks to it directly — it reads two files the extension writes.
+//  The i2pd daemon lives in the tunnel extension. Everything shown in the UI
+//  comes back over sendProviderMessage — deliberately not through a shared app
+//  group, which a sideloading profile will not have registered.
 
 import Foundation
 import NetworkExtension
@@ -17,14 +18,26 @@ struct RouterStats {
 }
 
 final class VpnController: ObservableObject {
-    static let appGroup = "group.uk.nouvborne.ios2pd"
-    private static let providerBundleID = "uk.nouvborne.ios2pd.tunnel"
-
     @Published private(set) var status: NEVPNStatus = .invalid
     @Published private(set) var stats = RouterStats()
+    @Published private(set) var log = ""
     @Published var errorMessage: String?
 
     private var manager: NETunnelProviderManager?
+
+    /// The extension's real bundle id. Sideloaders routinely rewrite bundle
+    /// ids, and naming one that no longer exists makes iOS fail the tunnel with
+    /// a bare "internal error", so read it back off the bundle on disk.
+    static var providerBundleID: String {
+        if let plugins = Bundle.main.builtInPlugInsURL,
+           let entries = try? FileManager.default.contentsOfDirectory(
+               at: plugins, includingPropertiesForKeys: nil),
+           let appex = entries.first(where: { $0.pathExtension == "appex" }),
+           let identifier = Bundle(url: appex)?.bundleIdentifier {
+            return identifier
+        }
+        return (Bundle.main.bundleIdentifier ?? "uk.nouvborne.ios2pd") + ".tunnel"
+    }
 
     init() {
         NotificationCenter.default.addObserver(
@@ -94,10 +107,6 @@ final class VpnController: ObservableObject {
         }
     }
 
-    /// False when the app group entitlement did not survive signing, which
-    /// makes the log and stats files unreadable even though the VPN may run.
-    static var sharedContainerAvailable: Bool { sharedURL != nil }
-
     private func fail(_ error: Error) {
         DispatchQueue.main.async { self.errorMessage = error.localizedDescription }
     }
@@ -136,39 +145,29 @@ final class VpnController: ObservableObject {
         }
     }
 
-    func refreshStats() {
-        // The extension stops updating status.plist the moment it goes away —
-        // including when it is killed — so don't keep showing its last numbers.
-        guard status == .connected else {
-            stats = RouterStats()
+    /// Pulls the log tail and router counters from the extension.
+    func refresh() {
+        guard status == .connected,
+              let session = manager?.connection as? NETunnelProviderSession
+        else {
+            if stats.uptime != 0 { stats = RouterStats() }
             return
         }
-        guard let url = Self.sharedURL?.appendingPathComponent("status.plist"),
-              let values = NSDictionary(contentsOf: url) as? [String: Any]
-        else { return }
-        stats = RouterStats(
-            uptime: values["uptime"] as? Int ?? 0,
-            inbound: values["inbound"] as? Int ?? 0,
-            outbound: values["outbound"] as? Int ?? 0,
-            routers: values["routers"] as? Int ?? 0,
-            status: values["status"] as? String ?? "—"
-        )
-    }
-
-    static var sharedURL: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
-    }
-
-    /// Tail of the daemon log the extension writes. Reads only the last
-    /// `maxBytes` so a long session doesn't pull megabytes into memory.
-    static func logTail(maxBytes: UInt64 = 64 * 1024) -> String {
-        guard let url = sharedURL?.appendingPathComponent("i2pd.log"),
-              let handle = try? FileHandle(forReadingFrom: url)
-        else { return "" }
-        defer { try? handle.close() }
-        let end = (try? handle.seekToEnd()) ?? 0
-        try? handle.seek(toOffset: end > maxBytes ? end - maxBytes : 0)
-        let data = (try? handle.readToEnd()) ?? Data()
-        return String(decoding: data, as: UTF8.self)
+        try? session.sendProviderMessage(Data("stats".utf8)) { [weak self] reply in
+            guard let reply,
+                  let values = (try? JSONSerialization.jsonObject(with: reply))
+                    as? [String: Any]
+            else { return }
+            DispatchQueue.main.async {
+                self?.stats = RouterStats(
+                    uptime: values["uptime"] as? Int ?? 0,
+                    inbound: values["inbound"] as? Int ?? 0,
+                    outbound: values["outbound"] as? Int ?? 0,
+                    routers: values["routers"] as? Int ?? 0,
+                    status: values["status"] as? String ?? "—"
+                )
+                self?.log = values["log"] as? String ?? ""
+            }
+        }
     }
 }

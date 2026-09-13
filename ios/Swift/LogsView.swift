@@ -1,17 +1,25 @@
-//  LogsView.swift — live tail of the i2pd log the tunnel extension writes into
-//  the shared app-group container.
+//  LogsView.swift — live tail of the i2pd log, polled from the tunnel
+//  extension while it is connected.
 
 import SwiftUI
 import UIKit
+import NetworkExtension
 
 struct LogsView: View {
-    @State private var lines: [String] = []
+    @EnvironmentObject private var vpn: VpnController
     @State private var follow = true
+
+    private var lines: [String] {
+        vpn.log
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .suffix(300)
+            .map(String.init)
+    }
 
     var body: some View {
         NavigationStack {
             Group {
-                if lines.isEmpty { empty } else { content }
+                if lines.isEmpty { empty } else { content(lines) }
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("Logs")
@@ -19,11 +27,11 @@ struct LogsView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
-                        UIPasteboard.general.string = lines.joined(separator: "\n")
+                        UIPasteboard.general.string = vpn.log
                     } label: {
                         Image(systemName: "doc.on.doc")
                     }
-                    .disabled(lines.isEmpty)
+                    .disabled(vpn.log.isEmpty)
                     .accessibilityLabel("Copy log")
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -36,12 +44,9 @@ struct LogsView: View {
                 }
             }
         }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            refresh()
-        }
     }
 
-    private var content: some View {
+    private func content(_ lines: [String]) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
@@ -65,15 +70,13 @@ struct LogsView: View {
     }
 
     private var empty: some View {
-        let noContainer = !VpnController.sharedContainerAvailable
-        return VStack(spacing: 12) {
-            Image(systemName: noContainer ? "exclamationmark.triangle" : "text.alignleft")
+        VStack(spacing: 12) {
+            Image(systemName: "text.alignleft")
                 .font(.system(size: 34, weight: .light))
-                .foregroundStyle(noContainer ? Theme.caution : .secondary)
-            Text(noContainer ? "Shared container unavailable" : "No output yet")
-                .font(.headline)
-            Text(noContainer
-                 ? "The app group entitlement didn't survive signing, so the log the tunnel writes can't be read. The VPN itself may still work."
+                .foregroundStyle(.secondary)
+            Text("No output yet").font(.headline)
+            Text(vpn.status == .connected
+                 ? "The router is starting up."
                  : "Connect on the Home tab to start the router.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -81,13 +84,5 @@ struct LogsView: View {
         }
         .padding(Theme.pagePadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func refresh() {
-        let tail = VpnController.logTail()
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .suffix(300)
-            .map(String.init)
-        if tail != lines { lines = tail }
     }
 }

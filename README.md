@@ -40,9 +40,13 @@ Consequences worth knowing:
   config keeps the router lean — `notransit = true`, no transit tunnels,
   `bandwidth = L`, no ElGamal precomputation — so it does not relay for others.
 
-The app and the extension share a container
-(`group.uk.nouvborne.ios2pd`); the extension writes `i2pd.log` and
-`status.plist` there, and the app reads them.
+The app talks to the extension over `sendProviderMessage`, which is how the
+Logs tab and the router counters on Home get their data. There is deliberately
+no app group: a sideloaded build is signed against a provisioning profile that
+will not have one registered, and claiming an entitlement the profile does not
+grant stops the extension from launching at all. The app also reads the
+extension's real bundle id off disk rather than hardcoding it, since
+sideloaders rewrite bundle ids.
 
 ## Build
 
@@ -73,11 +77,9 @@ The IPA is unsigned, so it has to be re-signed before it will install
 > which free personal-team signing does not grant. With a free Apple ID the app
 > installs but connecting fails.
 >
-> When re-signing, make sure the nested `.appex` is signed too, that the Network
-> Extensions capability is applied to both, and that the app group
-> (`group.uk.nouvborne.ios2pd`) is kept in sync across both bundles — if the
-> sideloader rewrites bundle ids, the shared container is lost and the Logs tab
-> stays empty (the VPN itself still works).
+> When re-signing, make sure the nested `.appex` is signed too and that the
+> Network Extensions capability is applied to both bundles. Bundle ids may be
+> rewritten freely; the app resolves the extension's id at runtime.
 
 ## Caveats
 
@@ -96,7 +98,7 @@ The IPA is unsigned, so it has to be re-signed before it will install
 scripts/                         build scripts (macOS/Xcode)
 ios/Swift/                       SwiftUI app (Liquid Glass on iOS 26+)
 ios/Info.plist                   app bundle metadata
-ios/entitlements.plist           network extension + app group
+ios/entitlements.plist           network extension entitlement
 ios/ext/                         NEPacketTunnelProvider — runs the i2pd router
 i2pd/                            i2pd source (submodule, pinned to 2.61.0)
 ```

@@ -1,10 +1,10 @@
 //  PacketTunnelProvider.mm — runs the i2pd daemon inside the VPN extension and
 //  points the system at its local HTTP proxy for *.i2p.
 //
-//  Everything the app displays is written to the shared app-group container:
-//    i2pd/          i2pd's data directory (netdb, keys, i2pd.conf)
-//    i2pd.log       the daemon log, tailed by the Logs tab
-//    status.plist   uptime / tunnel counts, polled by the Home tab
+//  Everything lives in the extension's own container and reaches the app over
+//  handleAppMessage. There is deliberately no app group: a sideloaded build is
+//  signed against a profile that will not have one registered, and claiming an
+//  entitlement the profile does not grant stops the extension from launching.
 
 // Apple's AssertMacros.h defines a bare `check` macro that collides with the
 // Boost headers the i2pd includes pull in. Opt out of the un-underscored names.
@@ -15,7 +15,6 @@
 #import <Foundation/Foundation.h>
 
 #include <atomic>
-#include <chrono>
 #include <string>
 #include <thread>
 #include <vector>
@@ -27,30 +26,16 @@
 #include "RouterContext.h"
 #include "Tunnel.h"
 
-static NSString* const kAppGroup = @"group.uk.nouvborne.ios2pd";
 static const int kHttpProxyPort = 4444;
 static const unsigned long long kMaxLogBytes = 1024 * 1024;
+static const unsigned long long kLogTailBytes = 64 * 1024;
 
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
 
-// The app reads the log and status out of the shared container. If the group is
-// unavailable (a sideloader rewrote the bundle ids), fall back to the
-// extension's own container: the router still works, the app just shows nothing.
-static NSString* SharedDir(void) {
-  NSURL* url = [[NSFileManager defaultManager]
-      containerURLForSecurityApplicationGroupIdentifier:kAppGroup];
-  if (!url) {
-    NSLog(@"[ios2pd] app group %@ unavailable; logging to the extension's own "
-          @"container, the app will not see it", kAppGroup);
-    return NSHomeDirectory();
-  }
-  return url.path;
-}
-
 static NSString* DataDir(void) {
-  NSString* dir = [SharedDir() stringByAppendingPathComponent:@"i2pd"];
+  NSString* dir = [NSHomeDirectory() stringByAppendingPathComponent:@"i2pd"];
   [[NSFileManager defaultManager] createDirectoryAtPath:dir
                            withIntermediateDirectories:YES
                                             attributes:nil
@@ -59,12 +44,7 @@ static NSString* DataDir(void) {
 }
 
 static NSString* LogPath(void) {
-  return [SharedDir() stringByAppendingPathComponent:@"i2pd.log"];
-}
-
-static NSURL* StatusURL(void) {
-  return [NSURL fileURLWithPath:[SharedDir()
-                                    stringByAppendingPathComponent:@"status.plist"]];
+  return [NSHomeDirectory() stringByAppendingPathComponent:@"i2pd.log"];
 }
 
 // i2pd appends to its logfile forever, so drop it once it gets large.
@@ -76,6 +56,21 @@ static void TrimLog(void) {
   if (attrs && [attrs fileSize] > kMaxLogBytes) {
     [fm removeItemAtPath:LogPath() error:nil];
   }
+}
+
+static NSString* LogTail(void) {
+  NSFileHandle* fh = [NSFileHandle fileHandleForReadingAtPath:LogPath()];
+  if (!fh) return @"";
+  unsigned long long end = [fh seekToEndOfFile];
+  [fh seekToFileOffset:end > kLogTailBytes ? end - kLogTailBytes : 0];
+  NSData* data = [fh readDataToEndOfFile];
+  [fh closeFile];
+  NSString* text = [[NSString alloc] initWithData:data
+                                         encoding:NSUTF8StringEncoding];
+  // The tail can start mid-sequence; Latin-1 never fails to decode.
+  return text ?: [[NSString alloc] initWithData:data
+                                       encoding:NSISOLatin1StringEncoding]
+                     ?: @"";
 }
 
 // ---------------------------------------------------------------------------
@@ -100,9 +95,7 @@ static NSString* WriteConfig(void) {
                   kHttpProxyPort];
   [s appendString:@"\n[socksproxy]\nenabled = false\n"];
   [s appendString:@"\n[sam]\nenabled = false\n"];
-  [s appendString:@"\n[i2cp]\nenabled = false\n"];
   [s appendString:@"\n[http]\nenabled = false\n"];
-  [s appendString:@"\n[upnp]\nenabled = false\n"];
   [s appendString:@"\n[reseed]\nverify = true\n"];
 
   NSString* path = [DataDir() stringByAppendingPathComponent:@"i2pd.conf"];
@@ -117,9 +110,7 @@ static NSString* WriteConfig(void) {
 namespace {
 
 std::atomic<bool> gRunning{false};
-std::atomic<bool> gStatsStop{false};
 std::thread gDaemonThread;
-std::thread gStatsThread;
 
 NSString* RouterStatusString() {
   switch (i2p::context.GetStatus()) {
@@ -131,19 +122,6 @@ NSString* RouterStatusString() {
     case i2p::eRouterStatusStan: return @"Stan";
   }
   return @"—";
-}
-
-void WriteStatus() {
-  @autoreleasepool {
-    NSDictionary* status = @{
-      @"uptime" : @((NSInteger)i2p::context.GetUptime()),
-      @"inbound" : @((NSInteger)i2p::tunnel::tunnels.CountInboundTunnels()),
-      @"outbound" : @((NSInteger)i2p::tunnel::tunnels.CountOutboundTunnels()),
-      @"routers" : @((NSInteger)i2p::data::netdb.GetNumRouters()),
-      @"status" : RouterStatusString(),
-    };
-    [status writeToURL:StatusURL() error:nil];
-  }
 }
 
 bool StartDaemon() {
@@ -169,7 +147,7 @@ bool StartDaemon() {
   for (auto& arg : args) argv.push_back(&arg[0]);
 
   // These land in the device console. They are the only trace left if i2pd
-  // exits before it opens its own logfile, or if the app group is missing.
+  // exits before it opens its own logfile.
   NSLog(@"[ios2pd] datadir=%s certsdir=%s", datadir.c_str(), certs.UTF8String);
   if (!Daemon.init(static_cast<int>(argv.size()), argv.data())) {
     NSLog(@"[ios2pd] Daemon.init failed");
@@ -184,23 +162,11 @@ bool StartDaemon() {
 
   gRunning.store(true);
   gDaemonThread = std::thread([] { Daemon.run(); });
-
-  gStatsStop.store(false);
-  gStatsThread = std::thread([] {
-    while (!gStatsStop.load()) {
-      if (gRunning.load()) WriteStatus();
-      std::this_thread::sleep_for(std::chrono::seconds(2));
-    }
-  });
   return true;
 }
 
 void StopDaemon() {
   if (!gRunning.load()) return;
-
-  gStatsStop.store(true);
-  if (gStatsThread.joinable()) gStatsThread.join();
-
   Daemon.running = false;
   if (gDaemonThread.joinable()) gDaemonThread.join();
   Daemon.stop();
@@ -269,6 +235,28 @@ void StopDaemon() {
            completionHandler:(void (^)(void))completionHandler {
   StopDaemon();
   completionHandler();
+}
+
+// The app polls this for the log tail and router stats; it is the only channel
+// between the two processes.
+- (void)handleAppMessage:(NSData*)messageData
+       completionHandler:(void (^)(NSData* _Nullable))completionHandler {
+  if (!completionHandler) return;
+  @autoreleasepool {
+    BOOL up = gRunning.load();
+    NSDictionary* payload = @{
+      @"running" : @(up),
+      @"log" : LogTail(),
+      @"uptime" : @(up ? (NSInteger)i2p::context.GetUptime() : 0),
+      @"inbound" : @(up ? (NSInteger)i2p::tunnel::tunnels.CountInboundTunnels() : 0),
+      @"outbound" : @(up ? (NSInteger)i2p::tunnel::tunnels.CountOutboundTunnels() : 0),
+      @"routers" : @(up ? (NSInteger)i2p::data::netdb.GetNumRouters() : 0),
+      @"status" : up ? RouterStatusString() : @"—",
+    };
+    completionHandler([NSJSONSerialization dataWithJSONObject:payload
+                                                      options:0
+                                                        error:nil]);
+  }
 }
 
 @end
